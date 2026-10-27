@@ -43,6 +43,11 @@
 #                       open focused data loading options; a file path loads that
 #                       file, a FOLDER path bulk-loads every CSV/Parquet/JSON file
 #                       in it (one table each); --force REPLACES bundled datasets
+#   connect [source]    connect an external database (PostgreSQL, ...) as a
+#                       virtual schema: artifacts, driver, Java runtime and
+#                       objects are set up for you; asks before the one restart
+#   source list|show|check|reauth|refresh|remove <name> [--dry-run]
+#                       manage connected sources (remove asks first)
 #   sql '<statement>' [--write]
 #                       run one SQL statement and translate the error into a
 #                       remedy; reads only unless --write. Uses the ADMIN
@@ -169,6 +174,7 @@ fi
 [ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
 [ -f "$_lib_dir/json-tables.sh" ] && . "$_lib_dir/json-tables.sh"
 [ -f "$_lib_dir/exasol-scheduler.sh" ] && . "$_lib_dir/exasol-scheduler.sh"
+[ -f "$_lib_dir/virtual-schemas.sh" ] && . "$_lib_dir/virtual-schemas.sh"
 
 _runtime_type() {
     manifest_get runtime.type 2>/dev/null
@@ -970,6 +976,35 @@ _start_database() {
 }
 
 # cmd_start [service] — everything the kit runs, or one named service.
+# _exakit_addons_post_start — every database start ends here. An add-on that
+# has to redo something on a fresh database container defines <id>_post_start
+# (virtual-schemas re-links name resolution into the Java sandbox); generic, so
+# no add-on is named here. Best-effort: a hook can never fail the start.
+_exakit_addons_post_start() {
+    for _aps_id in $(exakit_marketplace_addons | cut -d'|' -f1); do
+        _aps_fn="$(_exakit_addon_fn "$_aps_id" post_start)"
+        command -v "$_aps_fn" >/dev/null 2>&1 || continue
+        "$_aps_fn" || true
+    done
+    return 0
+}
+
+# cmd_connect / cmd_source — external databases as virtual schemas. The work
+# is the virtual-schemas engine's; these only hand it the arguments, and its
+# exit code is the command's.
+cmd_connect() {
+    _require_install
+    command -v virtual_schemas_run >/dev/null 2>&1 || \
+        reject "This kit copy does not carry virtual schemas yet. Update the kit first: exakit update"
+    virtual_schemas_run connect "$@"
+}
+cmd_source() {
+    _require_install
+    command -v virtual_schemas_run >/dev/null 2>&1 || \
+        reject "This kit copy does not carry virtual schemas yet. Update the kit first: exakit update"
+    virtual_schemas_run source "$@"
+}
+
 cmd_start() {
     _service_scope start "$@"
     _require_install
@@ -980,8 +1015,9 @@ cmd_start() {
     if [ -n "$EXAKIT_SERVICE_SCOPE" ]; then
         _exakit_log_file "INFO  start scoped to $EXAKIT_SERVICE_SCOPE"
         if [ "$EXAKIT_SERVICE_SCOPE" = "database" ]; then
-            _start_database
-            return $?
+            _start_database || return $?
+            _exakit_addons_post_start
+            return 0
         fi
         # One add-on was asked for, so only that one is touched: the database
         # is NOT started on its behalf. An add-on talks to the database, and
@@ -997,6 +1033,7 @@ cmd_start() {
     fi
     # Everything the kit runs, database first, then every add-on service.
     _start_database
+    _exakit_addons_post_start
     for _start_id in $(exakit_service_ids); do
         [ "$_start_id" = "database" ] && continue
         exakit_service_start "$_start_id" || true
@@ -2556,6 +2593,10 @@ case "${1:-help}" in
     migrate)  shift; cmd_migrate "$@" ;;
     autostart) shift; _with_notice cmd_autostart "$@" ;;
     data-load) shift; _with_notice cmd_data_load "${1:-}" ;;
+    # The engine parses and refuses its own options (exit 2, a JSON object
+    # under --json), so these two arms pass everything through untouched.
+    connect) shift; cmd_connect "$@"; exit $? ;;
+    source)  shift; cmd_source "$@"; exit $? ;;
     mcp-setup) shift; _with_notice cmd_mcp_setup "$@" ;;
     mcp-doctor) shift; _exakit_refuse_unknown_options mcp-doctor "--json,-j" "$@"; _with_notice cmd_mcp_doctor "$@" ;;
     mcp-remove) shift; _exakit_refuse_unknown_options mcp-remove "" "$@"; _with_notice cmd_mcp_remove "$@" ;;

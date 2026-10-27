@@ -17,6 +17,8 @@
         "stop",
         "sql",
         "data-load",
+        "connect",
+        "source",
         "logs",
         "autostart"
       ]
@@ -186,6 +188,37 @@
         "EXAKIT_DATA_FILE=./sales.json EXAKIT_DATA_TABLE=STARTER_KIT.SALES exakit data-load",
         "EXAKIT_DATA_FILE=~/exports EXAKIT_SCHEMA=SALES exakit data-load",
         "EXAKIT_ON_EXISTING=replace exakit data-load ~/exports"
+      ]
+    },
+    {
+      "command": "connect",
+      "options": "[<source>] [--name <name>] [--url <jdbc-url> | --host <h> --port <p> --database <d>] [--user <u>] [--schema <s>] [--tls verify|encrypt|none] [--password-file <path> | --password-stdin] [--yes] [--dry-run] [--json]",
+      "summary": "Connect an external database (PostgreSQL, ...) as a virtual schema.",
+      "description": "Asks for the source type and its connection details (or a pasted JDBC URL), then does everything else: downloads and checksum-verifies the adapter and JDBC driver, stages them where the database reads them, registers the driver, installs the database's Java runtime if it is missing, creates the CONNECTION, adapter script and virtual schema VS_<NAME>, and proves it by reading real rows. Installing the Java runtime restarts the database once - it asks first; every later connect needs no restart. The password is asked hidden or read from a file and is stored only in the database's CONNECTION object, never in the kit's files or logs. TLS: encrypted by default; Exasol Personal cannot verify server certificates yet, and an unencrypted link is offered only for hosts on this machine or a private network, never silently. The new schema is readable by the MCP read-only user, so your AI clients can see it. Running connect again for the same name finishes or repairs it.",
+      "environment": [
+        "EXAKIT_VS_SOURCE, EXAKIT_VS_NAME, EXAKIT_VS_JDBC_URL (or EXAKIT_VS_HOST, EXAKIT_VS_PORT, EXAKIT_VS_DATABASE), EXAKIT_VS_USER, EXAKIT_VS_SCHEMA answer the questions",
+        "EXAKIT_VS_PASSWORD_FILE=<path> supplies the password; there is no --password option",
+        "EXAKIT_VS_TLS=verify|encrypt|none chooses the TLS level for a run with no terminal",
+        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (or --yes) consents to the one restart the Java runtime needs"
+      ],
+      "exit_codes": "0 ready · 1 the source could not be reached or read (remedy names the fix) · 2 bad input · 3 database not running · 4 not installed · 5 the restart was not confirmed",
+      "examples": [
+        "exakit connect",
+        "exakit connect postgresql --name sales --url jdbc:postgresql://db.example.com:5432/shop --user reader --schema public --password-file ~/pg.pw",
+        "exakit connect postgresql --name sales --dry-run"
+      ]
+    },
+    {
+      "command": "source",
+      "options": "list | show <name> | check <name> | reauth <name> | refresh <name> | remove <name> [--dry-run] [--yes] [--json]",
+      "summary": "Manage connected sources.",
+      "description": "list shows every connected source with its TLS level and last check. show prints one source's details. check repairs what a restart can undo (staged files, the driver registration, name resolution in the Java sandbox), then proves the source answers and its rows can be read. reauth replaces the user and password stored in the CONNECTION. refresh re-reads the source's tables and columns. remove drops the virtual schema and connection and deletes the adapter, driver and files no other source still uses; --dry-run lists what would go, and without a terminal it needs --yes.",
+      "exit_codes": "0 ok · 1 the check or change failed · 2 unknown source or bad input · 3 database not running · 5 removal not confirmed",
+      "examples": [
+        "exakit source list",
+        "exakit source check sales",
+        "exakit source reauth sales --password-file ~/pg.pw",
+        "exakit source remove sales --dry-run"
       ]
     },
     {

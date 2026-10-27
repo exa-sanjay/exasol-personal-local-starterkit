@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "postgresql",
+  "label": "PostgreSQL",
+  "aliases": ["postgres", "pg", "pgsql", "psql"],
+  "adapter": {
+    "repo": "exasol/postgresql-virtual-schema",
+    "version": "4.1.0",
+    "file": "virtual-schema-dist-14.1.0-postgresql-4.1.0.jar",
+    "url": "https://github.com/exasol/postgresql-virtual-schema/releases/download/4.1.0/virtual-schema-dist-14.1.0-postgresql-4.1.0.jar",
+    "sha256_url": "https://github.com/exasol/postgresql-virtual-schema/releases/download/4.1.0/virtual-schema-dist-14.1.0-postgresql-4.1.0.jar.sha256",
+    "sha256": "046f5d2c09a5d89998d2cd8e11436dd86405ea2517dc6b32ba452c699e2e9eb8",
+    "license": "MIT"
+  },
+  "driver": {
+    "name": "PostgreSQL JDBC (pgJDBC)",
+    "version": "42.7.14",
+    "file": "postgresql-42.7.14.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.7.14/postgresql-42.7.14.jar",
+    "sha1_url": "https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.7.14/postgresql-42.7.14.jar.sha1",
+    "sha256": "73914527305a40cce504b0d3d90b23caf565136912d607ae8ae7c5895512332c",
+    "license": "BSD-2-Clause",
+    "bundled_in_adapter": true,
+    "settings": {
+      "DRIVERNAME": "EXAKIT_POSTGRESQL",
+      "PREFIX": "jdbc:postgresql:",
+      "DRIVERMAIN": "org.postgresql.Driver",
+      "FETCHSIZE": "100000",
+      "INSERTSIZE": "-1",
+      "NOSECURITY": "YES"
+    }
+  },
+  "script": {
+    "class": "com.exasol.adapter.RequestDispatcher",
+    "jvm_options": ["-Duser.timezone=UTC"]
+  },
+  "url": {
+    "scheme": "jdbc:postgresql://",
+    "alt_schemes": ["postgresql://", "postgres://"],
+    "template": "jdbc:postgresql://{host}:{port}/{database}",
+    "default_port": 5432,
+    "param_start": "?",
+    "param_separator": "&",
+    "allowed_params": ["sslmode", "connectTimeout", "socketTimeout", "loginTimeout", "ApplicationName", "options", "targetServerType", "tcpKeepAlive"],
+    "secret_params": ["password", "sslpassword", "sslkey", "sslcert"]
+  },
+  "inputs": [
+    {"id": "host", "label": "Host", "required": true, "example": "db.example.com"},
+    {"id": "port", "label": "Port", "type": "port", "default": 5432},
+    {"id": "database", "label": "Database", "required": true},
+    {"id": "user", "label": "User", "required": true},
+    {"id": "password", "label": "Password", "secret": true, "required": true},
+    {"id": "schema", "label": "Schema", "default": "public", "required": true}
+  ],
+  "properties": {
+    "CATALOG_NAME": "{database}",
+    "SCHEMA_NAME": "{schema}",
+    "POSTGRESQL_IDENTIFIER_MAPPING": "PRESERVE_ORIGINAL_CASE"
+  },
+  "tls": {
+    "param": "sslmode",
+    "default": "encrypt",
+    "levels": {
+      "verify": {
+        "params": {"sslmode": "verify-full", "sslfactory": "org.postgresql.ssl.DefaultJavaSSLFactory"},
+        "available": false,
+        "reason": "Exasol Personal's import process has an empty Java trust store, so it cannot verify any server certificate yet."
+      },
+      "encrypt": {"params": {"sslmode": "require"}},
+      "none": {"params": {"sslmode": "disable"}}
+    },
+    "from_url": {"verify-full": "verify", "verify-ca": "verify", "require": "encrypt", "prefer": "encrypt", "allow": "encrypt", "disable": "none"}
+  },
+  "check": {"statement": "SELECT 1"},
+  "notes": [
+    "Names keep their source spelling (PRESERVE_ORIGINAL_CASE): query them in double quotes, e.g. \"orders\".",
+    "NUMERIC columns arrive as VARCHAR (they can exceed Exasol's DECIMAL range); TIMESTAMPTZ arrives as TIMESTAMP."
+  ]
+}

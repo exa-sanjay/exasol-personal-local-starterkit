@@ -1,0 +1,256 @@
+"""Adapter and driver JARs: fetch, verify, cache, stage, release.
+
+A JAR is downloaded only when a connect needs it, and accepted only when its
+SHA-256 matches the pin in connector.json AND the checksum its publisher
+ships (a GitHub release's .sha256, Maven Central's .sha1). Verified files are
+cached by digest, so ten sources of one type download once.
+
+Staging is a file copy into the deployment's /exa folder - on Exasol Personal
+local that folder IS BucketFS and the JDBC driver store, and the database
+picks changes up without a restart:
+
+    <exa>/bucketfs/bfsdefault/default/exakit-vs/<connector>/<version>/<adapter>.jar
+        -> /buckets/bfsdefault/default/exakit-vs/<connector>/<version>/...
+    <exa>/jdbc/<DRIVERNAME>/{<driver>.jar, settings.cfg}
+
+Versioned bucket folders mean an update stages next to the old files instead
+of over them, so a running adapter script never sees its JAR change.
+"""
+
+import hashlib
+import os
+import shutil
+import urllib.request
+from pathlib import Path
+
+from . import state
+
+BUCKET_PREFIX = "/buckets/bfsdefault/default"
+BUCKET_DIR = Path("bucketfs") / "bfsdefault" / "default"
+KIT_BUCKET = "exakit-vs"
+
+
+class ArtifactError(Exception):
+    pass
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _get(url, timeout=120):
+    if not url.startswith("https://"):
+        raise ArtifactError("refusing to download over anything but HTTPS: %s" % url)
+    req = urllib.request.Request(url, headers={"User-Agent": "exakit-virtual-schemas"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _upstream_digest(spec):
+    """(algorithm, hex) the publisher states for this file, or None when the
+    publisher states none (then the pin alone decides)."""
+    for key, algo in (("sha256_url", "sha256"), ("sha1_url", "sha1")):
+        url = spec.get(key)
+        if not url:
+            continue
+        with _get(url, 60) as r:
+            text = r.read().decode("utf-8", "replace").strip()
+        # sha256sum format ("<hex>  <file>") or a bare hex digest.
+        return algo, text.split()[0].lower()
+    return None
+
+
+def fetch(spec, ui=None):
+    """Return the cached, verified path of the artifact `spec` describes."""
+    want = spec["sha256"].lower()
+    target = state.cache_dir() / want / spec["file"]
+    if target.exists() and sha256_file(target) == want:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".part-%d" % os.getpid())
+    if ui:
+        ui.info("Downloading %s" % spec["file"])
+    state.log("INFO", "download %s" % spec["url"])
+    try:
+        with _get(spec["url"]) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        got = sha256_file(tmp)
+        if got != want:
+            raise ArtifactError("%s failed verification: SHA-256 %s does not match the pinned %s. "
+                                "Nothing was installed." % (spec["file"], got, want))
+        upstream = _upstream_digest(spec)
+        if upstream:
+            algo, stated = upstream
+            actual = got if algo == "sha256" else _digest(tmp, algo)
+            if actual != stated:
+                raise ArtifactError("%s does not match the %s its publisher states (%s). "
+                                    "Nothing was installed." % (spec["file"], algo, stated))
+        os.replace(tmp, target)
+    except ArtifactError:
+        raise
+    except Exception as e:
+        raise ArtifactError("could not download %s: %s" % (spec["file"], e))
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return target
+
+
+def _digest(path, algo):
+    h = hashlib.new(algo)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _copy_atomic(src, dest):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and sha256_file(dest) == sha256_file(src):
+        return False
+    tmp = dest.with_name(dest.name + ".part-%d" % os.getpid())
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dest)
+    return True
+
+
+def bucket_rel(connector):
+    return Path(KIT_BUCKET) / connector["id"] / connector["adapter"]["version"]
+
+
+def stage_adapter(exa_root, connector, adapter_path, driver_path):
+    """Copy the adapter (and the driver, when the adapter does not bundle
+    one) into the versioned bucket folder. Returns the %jar paths."""
+    rel = bucket_rel(connector)
+    host_dir = Path(exa_root) / BUCKET_DIR / rel
+    jars = [adapter_path]
+    if driver_path is not None and not connector["driver"].get("bundled_in_adapter"):
+        jars.append(driver_path)
+    sql_paths = []
+    for p in jars:
+        _copy_atomic(p, host_dir / p.name)
+        sql_paths.append("%s/%s/%s" % (BUCKET_PREFIX, rel.as_posix(), p.name))
+    return sql_paths
+
+
+def settings_cfg(driver):
+    """The registration file: KEY=VALUE lines, LF only, and it MUST end with an
+    empty line or Nano silently ignores the last key."""
+    s = driver["settings"]
+    order = ["DRIVERNAME", "PREFIX", "DRIVERMAIN", "FETCHSIZE", "INSERTSIZE", "NOSECURITY"]
+    keys = [k for k in order if k in s] + sorted(k for k in s if k not in order)
+    lines = ["%s=%s" % (k, s[k]) for k in keys] + ["JAR=%s" % driver["file"]]
+    return ("\n".join(lines) + "\n\n").encode("ascii")
+
+
+def driver_dir(exa_root, driver):
+    return Path(exa_root) / "jdbc" / driver["settings"]["DRIVERNAME"]
+
+
+def stage_driver(exa_root, driver, driver_path):
+    d = driver_dir(exa_root, driver)
+    d.mkdir(parents=True, exist_ok=True)
+    _copy_atomic(driver_path, d / driver["file"])
+    cfg = d / "settings.cfg"
+    data = settings_cfg(driver)
+    if not cfg.exists() or cfg.read_bytes() != data:
+        tmp = cfg.with_name("settings.cfg.part-%d" % os.getpid())
+        tmp.write_bytes(data)
+        os.replace(tmp, cfg)
+    # An older driver version left in the folder would be a second JAR on the
+    # registration's classpath; only the pinned one stays.
+    for p in d.iterdir():
+        if p.suffix == ".jar" and p.name != driver["file"]:
+            p.unlink()
+    return d
+
+
+def foreign_prefix_owners(exa_root, driver):
+    """Other registrations claiming the same JDBC prefix. Nano keys on
+    DRIVERNAME and reads every jdbc/ subfolder; with two registrations for one
+    prefix the later one silently becomes the default, which is what the
+    adapter's generated IMPORT uses."""
+    ours = driver["settings"]["DRIVERNAME"]
+    prefix = driver["settings"]["PREFIX"]
+    found = []
+    root = Path(exa_root) / "jdbc"
+    if not root.is_dir():
+        return found
+    for sub in root.iterdir():
+        cfg = sub / "settings.cfg"
+        if not cfg.is_file():
+            continue
+        kv = dict(l.split("=", 1) for l in cfg.read_text("utf-8", "replace").splitlines() if "=" in l)
+        if kv.get("PREFIX") == prefix and kv.get("DRIVERNAME") != ours:
+            found.append(kv.get("DRIVERNAME") or sub.name)
+    return found
+
+
+# --- registry: who uses what -------------------------------------------------------
+
+def load_registry():
+    reg = state.read_json(state.registry_path(), {}) or {}
+    reg.setdefault("schema_version", 1)
+    reg.setdefault("adapters", {})
+    reg.setdefault("drivers", {})
+    return reg
+
+
+def add_ref(reg, kind, key, source, info):
+    entry = reg[kind].setdefault(key, dict(info, refs=[]))
+    entry.update(info)
+    if source not in entry["refs"]:
+        entry["refs"].append(source)
+        entry["refs"].sort()
+
+
+def drop_ref(reg, kind, key, source):
+    """Returns True when nothing references the entry any more."""
+    entry = reg[kind].get(key)
+    if not entry:
+        return False
+    if source in entry["refs"]:
+        entry["refs"].remove(source)
+    return not entry["refs"]
+
+
+def remove_bucket_files(exa_root, rel):
+    """Delete exactly the kit's versioned folder, then its empty parents up
+    to (not including) the bucket root. Never a broad delete."""
+    rel = Path(rel)
+    if rel.parts[:1] != (KIT_BUCKET,) or len(rel.parts) != 3:
+        raise ArtifactError("refusing to delete %s: not a kit-owned versioned folder" % rel)
+    root = Path(exa_root) / BUCKET_DIR
+    target = root / rel
+    removed = []
+    if target.is_dir():
+        for p in target.iterdir():
+            if p.is_file():
+                p.unlink()
+                removed.append(str(p))
+        target.rmdir()
+    for parent in (target.parent, target.parent.parent):
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+    return removed
+
+
+def remove_driver(exa_root, driver):
+    d = driver_dir(exa_root, driver)
+    removed = []
+    if d.is_dir():
+        for name in (driver["file"], "settings.cfg"):
+            p = d / name
+            if p.exists():
+                p.unlink()
+                removed.append(str(p))
+        try:
+            d.rmdir()
+        except OSError:
+            pass  # someone put their own file there; leave it
+    return removed
