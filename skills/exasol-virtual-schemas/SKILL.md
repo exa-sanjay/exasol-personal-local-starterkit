@@ -1,6 +1,6 @@
 ---
 name: exasol-virtual-schemas
-description: Query an external database (PostgreSQL first) from the local Exasol database without loading it, through a virtual schema the starter kit sets up with `exakit connect` — covering the unattended connect (env vars, password file, consent for the one restart), the source lifecycle (`exakit source list|show|check|reauth|refresh|remove`), why names need double quotes, the TLS and host-name limits of Exasol Personal, and the fact that every virtual schema is visible to AI clients over MCP. Triggers — "connect my Postgres to Exasol", "query an external database", "virtual schema", "exakit connect", "join PostgreSQL data with Exasol", "federated query", "remote database in Exasol", "source check failed", "reauth a connection", "remove a connected source".
+description: Query an external database (PostgreSQL, MySQL, SQL Server, Oracle, another Exasol) from the local Exasol database without loading it, through a virtual schema the starter kit sets up with `exakit connect` — covering the unattended connect (env vars, password file, consent for the one restart), the source lifecycle (`exakit source list|show|check|reauth|refresh|remove`), why names need double quotes, the TLS and host-name limits of Exasol Personal, and the fact that every virtual schema is visible to AI clients over MCP. Triggers — "connect my Postgres to Exasol", "connect MySQL", "connect SQL Server", "connect Oracle", "query an external database", "virtual schema", "exakit connect", "join PostgreSQL data with Exasol", "federated query", "remote database in Exasol", "source check failed", "reauth a connection", "remove a connected source".
 ---
 
 # Virtual Schemas — query another database from Exasol
@@ -8,7 +8,17 @@ description: Query an external database (PostgreSQL first) from the local Exasol
 Virtual schemas are **part of the kit** - there is nothing to install. They
 make the tables of an external database appear in the local Exasol as
 `VS_<NAME>`: every query reads the source **live**, nothing is copied.
-Supported now: **PostgreSQL**.
+Supported: **PostgreSQL, MySQL, SQL Server, Oracle** and **Exasol** (another
+Exasol, or a schema of this one). **Snowflake** is not available yet (see below).
+
+| Source | `exakit connect <type>` | TLS on Exasol Personal |
+|---|---|---|
+| PostgreSQL | `postgresql` (`pg`) | encrypted, certificate not verified |
+| MySQL | `mysql` | encrypted, not verified; driver is GPL, fetched onto this machine only |
+| SQL Server | `sqlserver` (`mssql`) | encrypted, not verified (`trustServerCertificate=true`) |
+| Oracle | `oracle` | Oracle Native Network Encryption (TCPS not possible yet) |
+| Exasol | `exasol` | **verified** - the certificate is pinned by fingerprint |
+| Snowflake | `snowflake` | not available: its driver must verify certificates, which the import side cannot yet |
 
 `exakit connect` does the whole setup — adapter and JDBC driver downloaded and
 checksum-verified, staged where the database reads them, the database's Java

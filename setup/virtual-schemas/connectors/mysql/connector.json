@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "id": "mysql",
+  "label": "MySQL",
+  "aliases": ["mariadb-mysql", "my"],
+  "license_notice": "MySQL Connector/J is GPL-2.0 (with the Universal FOSS Exception). The kit downloads it from Maven Central onto this machine only; it is never redistributed.",
+  "adapter": {
+    "repo": "exasol/mysql-virtual-schema",
+    "version": "6.1.0",
+    "file": "virtual-schema-dist-14.1.0-mysql-6.1.0.jar",
+    "url": "https://github.com/exasol/mysql-virtual-schema/releases/download/6.1.0/virtual-schema-dist-14.1.0-mysql-6.1.0.jar",
+    "sha256_url": "https://github.com/exasol/mysql-virtual-schema/releases/download/6.1.0/virtual-schema-dist-14.1.0-mysql-6.1.0.jar.sha256",
+    "sha256": "97005ff4b161c7294c9ddb722df4b1f9aae4df524eac5fc50abbd6adbf546e58",
+    "license": "MIT"
+  },
+  "driver": {
+    "name": "MySQL Connector/J",
+    "version": "9.6.0",
+    "file": "mysql-connector-j-9.6.0.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/mysql/mysql-connector-j/9.6.0/mysql-connector-j-9.6.0.jar",
+    "sha1_url": "https://repo.maven.apache.org/maven2/com/mysql/mysql-connector-j/9.6.0/mysql-connector-j-9.6.0.jar.sha1",
+    "sha256": "66df1d453789dc8cb759a7dc17f58646893bf28483f262328650f170472a6ead",
+    "license": "GPL-2.0 with Universal FOSS Exception",
+    "bundled_in_adapter": false,
+    "settings": {
+      "DRIVERNAME": "EXAKIT_MYSQL",
+      "PREFIX": "jdbc:mysql:",
+      "DRIVERMAIN": "com.mysql.cj.jdbc.Driver",
+      "FETCHSIZE": "100000",
+      "INSERTSIZE": "-1",
+      "NOSECURITY": "YES"
+    }
+  },
+  "script": {
+    "class": "com.exasol.adapter.RequestDispatcher",
+    "jvm_options": ["-Duser.timezone=UTC"]
+  },
+  "url": {
+    "scheme": "jdbc:mysql://",
+    "alt_schemes": ["mysql://"],
+    "template": "jdbc:mysql://{host}:{port}/{database}",
+    "default_port": 3306,
+    "param_start": "?",
+    "param_separator": "&",
+    "allowed_params": ["sslMode", "connectTimeout", "socketTimeout", "useUnicode", "characterEncoding", "serverTimezone", "zeroDateTimeBehavior", "tcpKeepAlive"],
+    "secret_params": ["password", "password1", "password2", "password3", "trustCertificateKeyStorePassword", "clientCertificateKeyStorePassword"]
+  },
+  "inputs": [
+    {"id": "host", "label": "Host", "required": true},
+    {"id": "port", "label": "Port", "type": "port", "default": 3306},
+    {"id": "database", "label": "Database", "required": true},
+    {"id": "user", "label": "User", "required": true},
+    {"id": "password", "label": "Password", "secret": true, "required": true}
+  ],
+  "properties": {
+    "CATALOG_NAME": "{database}"
+  },
+  "tls": {
+    "param": "sslMode",
+    "default": "encrypt",
+    "levels": {
+      "verify": {
+        "params": {"sslMode": "VERIFY_IDENTITY"},
+        "available": false,
+        "reason": "Exasol Personal's import process has an empty Java trust store, so it cannot verify any server certificate yet."
+      },
+      "encrypt": {"params": {"sslMode": "REQUIRED"}},
+      "none": {"params": {"sslMode": "DISABLED", "allowPublicKeyRetrieval": "true"}}
+    },
+    "from_url": {"VERIFY_IDENTITY": "verify", "VERIFY_CA": "verify", "REQUIRED": "encrypt", "PREFERRED": "encrypt", "DISABLED": "none"}
+  },
+  "check": {
+    "statement": "SELECT 1",
+    "schema": "SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = {database}) THEN 'ok' ELSE 'missing' END"
+  },
+  "notes": [
+    "The virtual schema mirrors the MySQL database you named; its tables keep the source's spelling, so quote them, e.g. \"orders\".",
+    "MySQL Connector/J is GPL software the kit fetches onto this machine only."
+  ]
+}

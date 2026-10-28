@@ -252,12 +252,14 @@ def gather_facts(ctx, connector, inputs, dry_run=False):
     installed = bool(java and java["installed"])
     exa = rt.exa_root
     adapter_cache = state.cache_dir() / connector["adapter"]["sha256"] / connector["adapter"]["file"]
-    driver_cache = state.cache_dir() / connector["driver"]["sha256"] / connector["driver"]["file"]
     staged = exa / artifacts.BUCKET_DIR / artifacts.bucket_rel(connector) / connector["adapter"]["file"]
-    ddir = artifacts.driver_dir(exa, connector["driver"])
-    registered = (ddir / connector["driver"]["file"]).is_file() and \
-        (ddir / "settings.cfg").is_file() and \
-        (ddir / "settings.cfg").read_bytes() == artifacts.settings_cfg(connector["driver"])
+    drv = plan.driver(connector)
+    driver_cache, registered = False, True
+    if drv:
+        driver_cache = (state.cache_dir() / drv["sha256"] / drv["file"]).is_file()
+        ddir = artifacts.driver_dir(exa, drv)
+        registered = (ddir / drv["file"]).is_file() and (ddir / "settings.cfg").is_file() and \
+            (ddir / "settings.cfg").read_bytes() == artifacts.settings_cfg(drv)
     conn = db.run("SELECT CONNECTION_COMMENT FROM SYS.EXA_DBA_CONNECTIONS WHERE CONNECTION_NAME = %s"
                   % sql.literal(names["connection"]))
     schema = db.run("SELECT SCHEMA_IS_VIRTUAL, SCHEMA_COMMENT FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s"
@@ -284,7 +286,7 @@ def gather_facts(ctx, connector, inputs, dry_run=False):
         "java_installed": installed,
         "java_active": active if installed else False,
         "adapter_cached": adapter_cache.is_file(),
-        "driver_cached": driver_cache.is_file(),
+        "driver_cached": driver_cache,
         "adapter_staged": staged.is_file(),
         "driver_registered": registered,
         "dns": dns,
@@ -321,6 +323,11 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
         connector = plan.find_connector(connectors, inputs["source"])
     except plan.PlanError as e:
         raise Fail(2, str(e))
+    why = plan.unavailable_reason(connector)
+    if why:
+        raise Fail(2, "%s cannot be connected yet: %s" % (connector["label"], why), None, None, "unavailable")
+    for k, v in plan.connector_env(connector).items():
+        inputs.setdefault(k, v)
 
     notes = []
     if tty and not inputs.get("url") and not inputs.get("host"):
@@ -341,20 +348,24 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
     if saved:
         # Re-running connect for a known name finishes or repairs it: what was
         # entered last time fills what was not given now - never the reverse.
-        for k in ("host", "port", "database", "user", "schema", "tls", "params"):
+        for k in plan.input_ids(connector) + ["tls", "params"]:
             if not inputs.get(k) and saved.get(k) is not None:
                 inputs[k] = saved[k]
 
     for f in connector["inputs"]:
         if f.get("secret") or inputs.get(f["id"]):
             continue
-        env = plan.ENV.get(f["id"], "EXAKIT_VS_%s" % f["id"].upper())
+        env = plan.env_var(f["id"])
         if not tty:
             if f.get("default") is not None:
                 inputs[f["id"]] = f["default"]
                 continue
+            if not f.get("required"):
+                continue
             raise Fail(2, "%s is required: set %s (or EXAKIT_VS_JDBC_URL)" % (f["label"], env))
-        inputs[f["id"]] = u.ask(f["label"], str(f.get("default") or ""))
+        answer = u.ask(f["label"] + ("" if f.get("required") else " (optional)"), str(f.get("default") or ""))
+        if answer:
+            inputs[f["id"]] = answer
     if not inputs.get("name"):
         default = "".join(ch for ch in (inputs.get("database") or "src") if ch.isalnum() or ch == "_")
         if not default or not default[0].isalpha():
@@ -376,7 +387,7 @@ def _decode_secret_bytes(data, where):
                       "Set-Content -Encoding utf8)." % where)
 
 
-def _read_password(ctx, user, required=True):
+def _read_password(ctx, user, required=True, secret_label="Password"):
     a = ctx.args
     path = getattr(a, "password_file", None) or os.environ.get("EXAKIT_VS_PASSWORD_FILE")
     pw = None
@@ -390,7 +401,7 @@ def _read_password(ctx, user, required=True):
         pw = sys.stdin.readline().rstrip("\r\n")
     elif ui_mod.interactive():
         keep = "" if required else ", Enter keeps the stored one"
-        pw = ctx.ui.ask_secret("Password for %s (hidden%s)" % (user, keep))
+        pw = ctx.ui.ask_secret("%s for %s (hidden%s)" % (secret_label, user, keep))
     if not pw and not required:
         return None
     if not pw:
@@ -403,9 +414,19 @@ def _read_password(ctx, user, required=True):
 
 # --- establishing the connection ------------------------------------------------------------
 
+def _probe_target(connector, conn_name):
+    """The connection a probe reads through and how: the main JDBC one with
+    the kit's driver named, or - for a connector whose check says "via" -
+    one of its extra connections (Exasol: IMPORT FROM EXA)."""
+    chk = connector["check"]
+    drv = plan.driver(connector)
+    return (conn_name + chk.get("via", ""), drv["settings"]["DRIVERNAME"] if drv else None,
+            chk.get("kind", "jdbc"))
+
+
 def _probe(ctx, connector, conn_name):
-    drv = connector["driver"]["settings"]["DRIVERNAME"]
-    ctx.db.run(sql.import_probe(conn_name, drv, connector["check"]["statement"]))
+    target, drv, kind = _probe_target(connector, conn_name)
+    ctx.db.run(sql.import_probe(target, drv, connector["check"]["statement"], kind))
 
 
 def _probe_schema(ctx, connector, conn_name, cfg, first_time):
@@ -414,10 +435,10 @@ def _probe_schema(ctx, connector, conn_name, cfg, first_time):
     tmpl = connector["check"].get("schema")
     if not tmpl:
         return
-    statement = tmpl.format(schema=sql.literal(cfg["schema"]))
-    drv = connector["driver"]["settings"]["DRIVERNAME"]
+    statement = plan.render(tmpl, {k: sql.literal(cfg.get(k) or "") for k in plan.input_ids(connector)})
+    target, drv, kind = _probe_target(connector, conn_name)
     try:
-        answer = ctx.db.value(sql.import_probe(conn_name, drv, statement))
+        answer = ctx.db.value(sql.import_probe(target, drv, statement, kind))
     except sql.SqlError as e:
         raise _source_fail(cfg, e.kind, e, first_time)
     if answer == "missing":
@@ -431,7 +452,7 @@ def _db_host(ctx, cfg, candidate, dns_state):
     sandbox can resolve it (the adapter connects from there on every query);
     otherwise its address - as the sandbox's own hosts file maps it, else as
     this machine resolves it - and the caller is told."""
-    if net.is_ip(candidate) or dns_state == "ok":
+    if net.is_ip(candidate) or dns_state == "ok" or net.classify_host(candidate) == "loopback":
         return candidate, False
     ip = sandbox_net(ctx, "resolve", candidate)
     if not ip or ip in ("unknown", "inactive"):
@@ -447,16 +468,31 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
     u = ctx.ui
     staging = names["connection"] + "_NEW"
     offer = plan.tls_offer(connector, host_cls)
-    candidates = [net.HOST_ALIAS] if host_cls == "loopback" else [cfg["host"]]
+    prepare = plan.hook(connector, "prepare")
+    if prepare:
+        # e.g. Exasol: the server certificate's fingerprint, read from here.
+        cfg.update(prepare(connector, cfg) or {})
+    # localhost inside the database is the database itself: right for a
+    # connector whose source IS this database (Exasol), wrong for any other,
+    # which is reached through the container's host alias instead.
+    if host_cls == "loopback" and connector.get("loopback", "alias") == "alias":
+        candidates = [net.HOST_ALIAS]
+    else:
+        candidates = [cfg["host"]]
+    made = [staging]
     try:
         while True:
             last = None
             for cand in candidates:
                 host, fallback = _db_host(ctx, cfg, cand, dns_state)
-                params = plan.url_params(connector, level, cfg.get("params"))
-                url = net.build_url(connector, host, cfg["port"], cfg["database"], params)
+                url = plan.build_url(connector, host, cfg, level)
+                extras = plan.extra_connections(connector, names, host, cfg, level)
                 ctx.db.run(sql.create_connection(staging, url, cfg["user"], password), fetch=False)
                 ctx.db.run(sql.comment_connection(staging), fetch=False)
+                for suffix, target in extras:
+                    made.append(staging + suffix)
+                    ctx.db.run(sql.create_connection(staging + suffix, target, cfg["user"], password), fetch=False)
+                    ctx.db.run(sql.comment_connection(staging + suffix), fetch=False)
                 try:
                     _probe(ctx, connector, staging)
                 except sql.SqlError as e:
@@ -468,6 +504,11 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
                 _probe_schema(ctx, connector, staging, cfg, first_time)
                 ctx.db.run(sql.create_connection(names["connection"], url, cfg["user"], password), fetch=False)
                 ctx.db.run(sql.comment_connection(names["connection"]), fetch=False)
+                for suffix, target in extras:
+                    full = names["connection"] + suffix
+                    ctx.db.run(sql.create_connection(full, target, cfg["user"], password), fetch=False)
+                    ctx.db.run(sql.comment_connection(full), fetch=False)
+                names["extra_connections"] = [names["connection"] + sfx for sfx, _ in extras]
                 u.ok("The database reaches %s:%s (%s)" % (host, cfg["port"], plan.TLS_LABELS[level]))
                 if fallback:
                     u.warn("The database's Java runtime cannot resolve %s, so the connection uses its "
@@ -492,10 +533,11 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
                 continue
             raise _source_fail(cfg, kind, last, first_time)
     finally:
-        try:
-            ctx.db.run("DROP CONNECTION IF EXISTS %s" % sql.ident(staging), fetch=False)
-        except (sql.SqlError, Fail):
-            pass
+        for name in made:
+            try:
+                ctx.db.run("DROP CONNECTION IF EXISTS %s" % sql.ident(name), fetch=False)
+            except (sql.SqlError, Fail):
+                pass
 
 
 # --- shared database objects -----------------------------------------------------------------
@@ -516,7 +558,8 @@ def _ensure_adapter_script(ctx, connector, cfg):
     bucket = cfg["artifacts"]["bucket"]
     jar = "%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["adapter_file"])
     jars = [jar]
-    if not connector["driver"].get("bundled_in_adapter"):
+    if plan.driver(connector) and not connector["driver"].get("bundled_in_adapter") and \
+            cfg["artifacts"].get("driver_file"):
         jars.append("%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["driver_file"]))
     _ensure_adapter_schema(ctx)
     ctx.db.run(sql.create_adapter_script(script, connector["script"]["class"],
@@ -539,7 +582,7 @@ def _ensure_virtual_schema(ctx, connector, cfg, refresh=True, first_time=False):
     script (an adapter upgrade) has to recreate it."""
     db, names = ctx.db, cfg["objects"]
     script = cfg["objects"]["script"].split(".", 1)[1]
-    props = plan.vs_properties(connector, names["connection"], cfg)
+    props = plan.vs_properties(connector, names, cfg, cfg.get("db_host"))
     vs = sql.ident(names["schema"])
     adapter = db.value("SELECT ADAPTER_SCRIPT_NAME FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE SCHEMA_NAME = %s"
                        % sql.literal(names["schema"]))
@@ -575,7 +618,8 @@ def _verify(ctx, cfg, first_time=False):
                                    "ORDER BY TABLE_NAME" % sql.literal(names["schema"]))]
     out = {"tables": tables, "rows_read": False, "sample_query": None, "mcp_readable": None}
     if not tables:
-        ctx.ui.warn("Connected, but schema %r shows no tables to user %s." % (cfg["schema"], cfg["user"]))
+        ctx.ui.warn("Connected, but %r shows no tables to user %s." % (
+            cfg.get("schema") or cfg.get("database"), cfg["user"]))
         return out
     first_err, readable = None, None
     for t in tables:
@@ -667,13 +711,12 @@ def connect(ctx):
                 (u.info if s["needed"] else u.ok)(("%s" if s["needed"] else "already done: %s") % s["action"])
             return 0, {"ok": True, "status": "planned", "dry_run": True, "plan": p, "tls": requested_level,
                        "remedy": None, "remedy_hint": None}
-        cfg = {
-            "schema_version": 2, "name": inputs["name"], "connector": connector["id"],
-            "host": inputs["host"], "port": inputs["port"], "database": inputs["database"],
-            "user": inputs["user"], "schema": inputs["schema"], "params": inputs.get("params") or {},
-            "tls": requested_level, "objects": p["objects"], "artifacts": artifacts.describe(connector),
-            "created": (saved or {}).get("created") or state.now_iso(),
-        }
+        cfg = {"schema_version": 2, "name": inputs["name"], "connector": connector["id"]}
+        for k in plan.input_ids(connector):
+            cfg[k] = inputs.get(k)
+        cfg.update(params=inputs.get("params") or {}, tls=requested_level, objects=p["objects"],
+                   artifacts=artifacts.describe(connector),
+                   created=(saved or {}).get("created") or state.now_iso())
         try:
             result = _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls,
                                      requested_level, first_time)
@@ -710,20 +753,23 @@ def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requ
     # A repair run for a source whose connection the kit made needs no
     # password - but only while nothing about the connection changes.
     # New details are applied only by rebuilding it, which needs one.
-    changes = plan.changed_fields(saved, inputs, requested_level)
+    changes = plan.changed_fields(connector, saved, inputs, requested_level)
     reuse_ok = facts["connection_owned"] and saved and not changes
-    password = _read_password(ctx, inputs["user"], required=False)
+    label = connector.get("secret_label", "Password")
+    password = _read_password(ctx, inputs["user"], required=False, secret_label=label)
     if password is None and not reuse_ok:
         if saved and facts["connection_owned"]:
             raise Fail(2, "The connection details changed (%s); rebuilding the connection needs the "
                           "password." % ", ".join(changes), None,
                        "Pass it with --password-file <path> or --password-stdin.", "password_needed")
-        _read_password(ctx, inputs["user"], required=True)  # explains what is missing
+        _read_password(ctx, inputs["user"], required=True, secret_label=label)  # explains what is missing
 
     if password is None:
-        for k in ("db_host", "tls", "ip_fallback"):
+        for k in ("db_host", "tls", "ip_fallback", "fingerprint"):
             if saved.get(k) is not None:
                 cfg[k] = saved[k]
+        if saved.get("objects", {}).get("extra_connections"):
+            cfg["objects"]["extra_connections"] = saved["objects"]["extra_connections"]
     return _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
 
 
@@ -732,22 +778,28 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
     if not facts["java_installed"]:
         ctx.rt.install_slc("java")
         u.ok("Java runtime recorded for the next start")
+    drv = plan.driver(connector)
+    if connector.get("license_notice"):
+        u.info(connector["license_notice"])
     adapter = artifacts.fetch(connector["adapter"], u)
-    driver = artifacts.fetch(connector["driver"], u)
+    driver = artifacts.fetch(drv, u) if drv else None
     artifacts.stage_adapter(ctx.rt.exa_root, connector, adapter, driver)
-    artifacts.stage_driver(ctx.rt.exa_root, connector["driver"], driver)
-    u.ok("Adapter %s and driver %s verified and staged" % (
-        connector["adapter"]["version"], connector["driver"]["version"]))
-    clash = artifacts.foreign_prefix_owners(ctx.rt.exa_root, connector["driver"])
-    if clash:
-        u.warn("Another JDBC driver registration also claims %s (%s). Queries may use that one "
-               "instead of the kit's." % (connector["driver"]["settings"]["PREFIX"], ", ".join(clash)))
+    if drv:
+        artifacts.stage_driver(ctx.rt.exa_root, drv, driver)
+        u.ok("Adapter %s and driver %s verified and staged" % (connector["adapter"]["version"], drv["version"]))
+        clash = artifacts.foreign_prefix_owners(ctx.rt.exa_root, drv)
+        if clash:
+            u.warn("Another JDBC driver registration also claims %s (%s). Queries may use that one "
+                   "instead of the kit's." % (drv["settings"]["PREFIX"], ", ".join(clash)))
+    else:
+        u.ok("Adapter %s verified and staged" % connector["adapter"]["version"])
     reg = artifacts.load_registry()
     art = cfg["artifacts"]
     artifacts.add_ref(reg, "adapters", art["adapter_key"], name,
                       {"bucket": art["bucket"], "script": cfg["objects"]["script"]})
-    artifacts.add_ref(reg, "drivers", art["driver_name"], name, {"connector": connector["id"],
-                                                                 "file": art["driver_file"]})
+    if drv:
+        artifacts.add_ref(reg, "drivers", art["driver_name"], name, {"connector": connector["id"],
+                                                                     "file": art["driver_file"]})
     state.write_json(state.registry_path(), reg)
 
     if p["restart_needed"]:
@@ -797,10 +849,11 @@ def _rollback(ctx, cfg):
                     % sql.literal(names["schema"]))
         if _owned(vs):
             db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(names["schema"]), fetch=False)
-        c = db.run("SELECT CONNECTION_COMMENT FROM SYS.EXA_DBA_CONNECTIONS WHERE CONNECTION_NAME = %s"
-                   % sql.literal(names["connection"]))
-        if _owned(c):
-            db.run("DROP CONNECTION %s" % sql.ident(names["connection"]), fetch=False)
+        for conn in [names["connection"]] + list(names.get("extra_connections") or []):
+            c = db.run("SELECT CONNECTION_COMMENT FROM SYS.EXA_DBA_CONNECTIONS WHERE CONNECTION_NAME = %s"
+                       % sql.literal(conn))
+            if _owned(c):
+                db.run("DROP CONNECTION %s" % sql.ident(conn), fetch=False)
     except (sql.SqlError, Fail) as e:
         state.log("WARN", "rollback: %s" % e)
     try:
@@ -866,10 +919,11 @@ def _check_runtime(ctx, connector, cfg):
     art, exa = cfg["artifacts"], ctx.rt.exa_root
     if art.get("adapter_version") == connector["adapter"]["version"]:
         adapter = artifacts.fetch(connector["adapter"], ctx.ui)
-        driver = artifacts.fetch(connector["driver"], ctx.ui)
+        drv = plan.driver(connector)
+        driver = artifacts.fetch(drv, ctx.ui) if drv else None
         artifacts.stage_adapter(exa, connector, adapter, driver)
-        if art.get("driver_file") == connector["driver"]["file"]:
-            artifacts.stage_driver(exa, connector["driver"], driver)
+        if drv and art.get("driver_file") == drv["file"]:
+            artifacts.stage_driver(exa, drv, driver)
     elif not (exa / artifacts.BUCKET_DIR / art["bucket"] / art["adapter_file"]).is_file():
         raise Fail(1, "The adapter files of %s (version %s) are gone, and this kit now ships %s." % (
             cfg["objects"]["schema"], art.get("adapter_version"), connector["adapter"]["version"]),
@@ -926,7 +980,7 @@ def reauth(ctx):
     new = dict(cfg)
     if getattr(ctx.args, "user", None):
         new["user"] = ctx.args.user
-    password = _read_password(ctx, new["user"])
+    password = _read_password(ctx, new["user"], secret_label=connector.get("secret_label", "Password"))
     ctx.ui.step("Updating the credentials of %s" % names["connection"])
     with ctx.lock():
         try:
@@ -1102,9 +1156,12 @@ def remove(ctx):
         if vs and (_owned(vs) or uses_kit):
             db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(names["schema"]), fetch=False)
             removed.append({"kind": "virtual_schema", "name": names["schema"]})
-        if _connection_exists(ctx, cfg):
-            db.run("DROP CONNECTION %s" % sql.ident(names["connection"]), fetch=False)
-            removed.append({"kind": "connection", "name": names["connection"]})
+        for conn in [names["connection"]] + list(names.get("extra_connections") or []):
+            c = db.run("SELECT CONNECTION_COMMENT FROM SYS.EXA_DBA_CONNECTIONS WHERE CONNECTION_NAME = %s"
+                       % sql.literal(conn))
+            if _owned(c):
+                db.run("DROP CONNECTION %s" % sql.ident(conn), fetch=False)
+                removed.append({"kind": "connection", "name": conn})
         d = state.source_dir(cfg["name"])
         for f in ("config.json", "state.json"):
             if (d / f).exists():
@@ -1152,9 +1209,11 @@ def show(ctx):
     reached = cfg.get("db_host") or cfg["host"]
     if cfg.get("ip_fallback"):
         reached += " (address used because the Java runtime cannot resolve names)"
+    # Connectors differ in what they ask (Exasol has no database, Snowflake a
+    # warehouse), so the line lists what this source actually has.
+    detail = ", ".join("%s %s" % (k, cfg[k]) for k in ("database", "warehouse", "schema", "role") if cfg.get(k))
     ctx.ui.panel("Source %s" % cfg["name"].lower(), [
-        ("Source", "%s (%s:%s, database %s, schema %s)" % (cfg["connector"], cfg["host"], cfg["port"],
-                                                          cfg["database"], cfg["schema"])),
+        ("Source", "%s (%s:%s%s)" % (cfg["connector"], cfg["host"], cfg["port"], ", " + detail if detail else "")),
         ("Reached as", reached),
         ("TLS", plan.TLS_LABELS.get(cfg.get("tls"), cfg.get("tls"))),
         ("User", cfg["user"]),

@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "snowflake",
+  "label": "Snowflake",
+  "aliases": ["sf", "snow"],
+  "available": false,
+  "unavailable_reason": "the Snowflake driver always verifies the server's certificate, and Exasol Personal's import process has no trust store to verify it with yet, so reading data cannot work. EXAKIT_VS_ALLOW_UNAVAILABLE=1 lets you try it anyway (for example once a newer Exasol Personal fixes this).",
+  "secret_label": "Password or programmatic access token",
+  "adapter": {
+    "repo": "exasol/snowflake-virtual-schema",
+    "version": "1.0.2",
+    "file": "virtual-schema-dist-14.1.0-snowflake-1.0.2.jar",
+    "url": "https://github.com/exasol/snowflake-virtual-schema/releases/download/1.0.2/virtual-schema-dist-14.1.0-snowflake-1.0.2.jar",
+    "sha256_url": "https://github.com/exasol/snowflake-virtual-schema/releases/download/1.0.2/virtual-schema-dist-14.1.0-snowflake-1.0.2.jar.sha256",
+    "sha256": "42689c239a38fa1166916ed93059278a2296ec30280cbd39d1e36b046ada4d96",
+    "license": "MIT"
+  },
+  "driver": {
+    "name": "Snowflake JDBC",
+    "version": "4.4.0",
+    "file": "snowflake-jdbc-4.4.0.jar",
+    "url": "https://repo.maven.apache.org/maven2/net/snowflake/snowflake-jdbc/4.4.0/snowflake-jdbc-4.4.0.jar",
+    "sha1_url": "https://repo.maven.apache.org/maven2/net/snowflake/snowflake-jdbc/4.4.0/snowflake-jdbc-4.4.0.jar.sha1",
+    "sha256": "eeabc114d2fd429365f8bdde0cb5dd00f0cf529b22aab754751bab1b09fc65c0",
+    "license": "Apache-2.0",
+    "bundled_in_adapter": true,
+    "settings": {
+      "DRIVERNAME": "EXAKIT_SNOWFLAKE",
+      "PREFIX": "jdbc:snowflake:",
+      "DRIVERMAIN": "net.snowflake.client.api.driver.SnowflakeDriver",
+      "FETCHSIZE": "100000",
+      "INSERTSIZE": "-1",
+      "NOSECURITY": "YES"
+    }
+  },
+  "script": {
+    "class": "com.exasol.adapter.RequestDispatcher",
+    "jvm_options": ["-Duser.timezone=UTC"]
+  },
+  "url": {
+    "scheme": "jdbc:snowflake://",
+    "default_port": 443,
+    "allowed_params": ["loginTimeout", "networkTimeout", "queryTimeout", "application"],
+    "secret_params": ["password", "token", "passcode", "private_key_file_pwd", "privateKey"]
+  },
+  "inputs": [
+    {"id": "host", "label": "Account URL host", "required": true, "example": "xy12345.eu-central-1.snowflakecomputing.com"},
+    {"id": "port", "label": "Port", "type": "port", "default": 443},
+    {"id": "warehouse", "label": "Warehouse", "required": true},
+    {"id": "database", "label": "Database", "required": true},
+    {"id": "schema", "label": "Schema", "required": true, "connection": false},
+    {"id": "role", "label": "Role", "required": false},
+    {"id": "user", "label": "User", "required": true},
+    {"id": "password", "label": "Password or programmatic access token", "secret": true, "required": true}
+  ],
+  "properties": {
+    "CATALOG_NAME": "{database|upper}",
+    "SCHEMA_NAME": "{schema|upper}"
+  },
+  "tls": {
+    "default": "encrypt",
+    "levels": {
+      "verify": {
+        "params": {},
+        "available": false,
+        "reason": "Exasol Personal's import process has an empty Java trust store, so it cannot verify any server certificate yet."
+      },
+      "encrypt": {"params": {}}
+    }
+  },
+  "check": {
+    "statement": "SELECT 1",
+    "schema": "SELECT CASE WHEN COUNT(*) > 0 THEN 'ok' ELSE 'missing' END FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = {schema|upper}"
+  },
+  "notes": [
+    "Snowflake names are upper case: the database and schema are upper-cased for you.",
+    "Use a service user with a programmatic access token (PAT) as the password."
+  ]
+}

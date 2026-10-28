@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "exasol",
+  "label": "Exasol",
+  "aliases": ["exa", "exasol-db"],
+  "loopback": "local",
+  "adapter": {
+    "repo": "exasol/exasol-virtual-schema",
+    "version": "9.0.4",
+    "file": "virtual-schema-dist-14.0.5-exasol-9.0.4.jar",
+    "url": "https://github.com/exasol/exasol-virtual-schema/releases/download/9.0.4/virtual-schema-dist-14.0.5-exasol-9.0.4.jar",
+    "sha256_url": "https://github.com/exasol/exasol-virtual-schema/releases/download/9.0.4/virtual-schema-dist-14.0.5-exasol-9.0.4.jar.sha256",
+    "sha256": "1b0fa824fdfcb6078f23f2b84c205d2f8d61a05f18b26eb7e827ab4263648cb5",
+    "license": "MIT"
+  },
+  "driver": null,
+  "script": {
+    "class": "com.exasol.adapter.RequestDispatcher",
+    "jvm_options": ["-Duser.timezone=UTC"]
+  },
+  "url": {
+    "scheme": "jdbc:exa:",
+    "default_port": 8563,
+    "allowed_params": [],
+    "secret_params": ["password"]
+  },
+  "inputs": [
+    {"id": "host", "label": "Host (localhost for a schema of this database)", "required": true},
+    {"id": "port", "label": "Port", "type": "port", "default": 8563},
+    {"id": "user", "label": "User", "required": true},
+    {"id": "password", "label": "Password", "secret": true, "required": true},
+    {"id": "schema", "label": "Schema", "required": true, "connection": false}
+  ],
+  "properties": {
+    "SCHEMA_NAME": "{schema}"
+  },
+  "tls": {
+    "default": "verify",
+    "levels": {
+      "verify": {"params": {}},
+      "encrypt": {"params": {}}
+    }
+  },
+  "check": {
+    "kind": "exa",
+    "via": "_EXA",
+    "statement": "SELECT 1",
+    "schema": "SELECT CASE WHEN EXISTS (SELECT 1 FROM SYS.EXA_ALL_SCHEMAS WHERE SCHEMA_NAME = {schema}) THEN 'ok' ELSE 'missing' END"
+  },
+  "notes": [
+    "Verified TLS works here: the server's certificate is pinned by its fingerprint, which needs no trust store.",
+    "Exasol names are case-sensitive in the virtual schema properties: give the schema as Exasol stores it (usually upper case)."
+  ]
+}

@@ -264,17 +264,17 @@ class Changes(unittest.TestCase):
     SAVED = {"host": "h", "port": 5432, "database": "d", "user": "u", "params": {}, "tls": "encrypt"}
 
     def test_no_change(self):
-        self.assertEqual(plan.changed_fields(self.SAVED, dict(self.SAVED, port="5432"), "encrypt"), [])
+        self.assertEqual(plan.changed_fields(PG, self.SAVED, dict(self.SAVED, port="5432"), "encrypt"), [])
 
     def test_changes_detected(self):
         # A re-run with a new port or TLS level used to report ready while the
         # old connection stayed in place.
-        self.assertEqual(plan.changed_fields(self.SAVED, dict(self.SAVED, port=5433), "encrypt"), ["port"])
-        self.assertEqual(plan.changed_fields(self.SAVED, self.SAVED, "none"), ["tls"])
-        self.assertEqual(len(plan.changed_fields(None, self.SAVED, "encrypt")), len(plan.CONNECTION_FIELDS))
+        self.assertEqual(plan.changed_fields(PG, self.SAVED, dict(self.SAVED, port=5433), "encrypt"), ["port"])
+        self.assertEqual(plan.changed_fields(PG, self.SAVED, self.SAVED, "none"), ["tls"])
+        self.assertEqual(len(plan.changed_fields(PG, None, self.SAVED, "encrypt")), len(plan.connection_fields(PG)))
 
     def test_schema_is_not_a_connection_change(self):
-        self.assertEqual(plan.changed_fields(self.SAVED, dict(self.SAVED, schema="other"), "encrypt"), [])
+        self.assertEqual(plan.changed_fields(PG, self.SAVED, dict(self.SAVED, schema="other"), "encrypt"), [])
 
     def test_restart_needed(self):
         self.assertTrue(plan.restart_needed({"java_installed": False}))
@@ -397,7 +397,7 @@ class Plan(unittest.TestCase):
                 plan.build_plan(PG, self.INPUTS, facts)
 
     def test_properties(self):
-        props = plan.vs_properties(PG, "EXAKIT_SRC_SALES", self.INPUTS)
+        props = plan.vs_properties(PG, {"connection": "EXAKIT_SRC_SALES"}, self.INPUTS)
         self.assertEqual(props, {"CONNECTION_NAME": "EXAKIT_SRC_SALES", "CATALOG_NAME": "shop",
                                  "SCHEMA_NAME": "public", "POSTGRESQL_IDENTIFIER_MAPPING": "PRESERVE_ORIGINAL_CASE"})
 
@@ -418,14 +418,122 @@ class Connectors(unittest.TestCase):
             with self.subTest(connector=cid):
                 for key in ("id", "label", "adapter", "driver", "script", "url", "inputs", "properties", "tls", "check"):
                     self.assertIn(key, c)
-                for art in (c["adapter"], c["driver"]):
+                drv = plan.driver(c)
+                for art in [c["adapter"]] + ([drv] if drv else []):
                     self.assertRegex(art["sha256"], r"^[0-9a-f]{64}$")
                     self.assertTrue(art["url"].startswith("https://"))
-                s = c["driver"]["settings"]
-                self.assertTrue(s["DRIVERNAME"].startswith("EXAKIT_"))
-                self.assertEqual(s.get("NOSECURITY"), "YES")
+                if drv:
+                    s = drv["settings"]
+                    self.assertTrue(s["DRIVERNAME"].startswith("EXAKIT_"))
+                    self.assertEqual(s.get("NOSECURITY"), "YES")
                 self.assertIn("-Duser.timezone=UTC", c["script"]["jvm_options"])
                 self.assertIn(c["tls"]["default"], c["tls"]["levels"])
+                for f in c["inputs"]:
+                    self.assertIn("label", f)
+
+    def test_driver_names_unique(self):
+        names = [plan.driver(c)["settings"]["DRIVERNAME"] for c in plan.load_connectors().values() if plan.driver(c)]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_all_six_present(self):
+        self.assertEqual(sorted(plan.load_connectors()),
+                         ["exasol", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
+
+
+CS = plan.load_connectors()
+
+
+class OtherConnectors(unittest.TestCase):
+    def _cfg(self, cid, **kw):
+        c = CS[cid]
+        base = {f["id"]: f.get("default") for f in c["inputs"] if not f.get("secret")}
+        base.update(kw)
+        return c, base
+
+    def test_mysql(self):
+        c, cfg = self._cfg("mysql", host="db", database="shop")
+        self.assertEqual(plan.build_url(c, "db", cfg, "encrypt"), "jdbc:mysql://db:3306/shop?sslMode=REQUIRED")
+        self.assertIn("allowPublicKeyRetrieval=true", plan.build_url(c, "db", cfg, "none"))
+        f, notes = plan.parse_url(c, "jdbc:mysql://db:3307/shop?allowLoadLocalInfile=true&sslMode=REQUIRED")
+        self.assertEqual((f["port"], f["database"]), (3307, "shop"))
+        self.assertIn("allowLoadLocalInfile", dict(notes)["params_dropped"])
+        self.assertEqual(plan.vs_properties(c, {"connection": "C"}, cfg), {"CONNECTION_NAME": "C", "CATALOG_NAME": "shop"})
+        self.assertTrue(c.get("license_notice"))
+
+    def test_sqlserver(self):
+        c, cfg = self._cfg("sqlserver", host="sql", database="Shop")
+        self.assertEqual(plan.build_url(c, "sql", cfg, "encrypt"),
+                         "jdbc:sqlserver://sql:1433;databaseName=Shop;encrypt=true;trustServerCertificate=true")
+        f, notes = plan.parse_url(c, "jdbc:sqlserver://sql:1444;databaseName=Shop;user=sa;password=Secr3tZZ;encrypt=false")
+        self.assertEqual((f["host"], f["port"], f["database"], f["user"]), ("sql", 1444, "Shop", "sa"))
+        self.assertNotIn("Secr3tZZ", json.dumps(f))
+        self.assertIn("password_stripped", [n[0] for n in notes])
+        merged = plan.merge_url(c, {"url": "jdbc:sqlserver://sql;databaseName=Shop;encrypt=false"}, [])
+        self.assertEqual(merged["tls"], "none")
+        self.assertEqual(plan.vs_properties(c, {"connection": "C"}, cfg)["SCHEMA_NAME"], "dbo")
+
+    def test_oracle(self):
+        c, cfg = self._cfg("oracle", host="ora", database="FREEPDB1", schema="hr")
+        self.assertEqual(plan.build_url(c, "ora", cfg, "none"), "jdbc:oracle:thin:@//ora:1521/FREEPDB1")
+        self.assertIn("oracle.net.encryption_client=REQUIRED", plan.build_url(c, "ora", cfg, "encrypt"))
+        for text, want in (("jdbc:oracle:thin:@//ora:1522/FREEPDB1", ("ora", 1522, "FREEPDB1")),
+                           ("jdbc:oracle:thin:@ora:1522/FREEPDB1", ("ora", 1522, "FREEPDB1")),
+                           ("jdbc:oracle:thin:@ora:1522:XE", ("ora", 1522, "XE"))):
+            f, _ = plan.parse_url(c, text)
+            self.assertEqual((f["host"], f["port"], f["database"]), want, text)
+        f, notes = plan.parse_url(c, "jdbc:oracle:thin:scott/T1gerZZ@//ora:1521/SVC")
+        self.assertEqual(f["user"], "scott")
+        self.assertNotIn("T1gerZZ", json.dumps(f))
+        with self.assertRaises(net.UrlError):
+            plan.parse_url(c, "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(HOST=x)))")
+        self.assertEqual(plan.vs_properties(c, {"connection": "C"}, cfg)["SCHEMA_NAME"], "HR")
+
+    def test_snowflake(self):
+        c, cfg = self._cfg("snowflake", host="xy1.snowflakecomputing.com", database="shop",
+                           warehouse="wh", schema="public")
+        url = plan.build_url(c, cfg["host"], cfg, "encrypt")
+        self.assertTrue(url.startswith("jdbc:snowflake://xy1.snowflakecomputing.com:443/?db=shop&warehouse=wh"))
+        self.assertTrue(url.endswith("JDBC_QUERY_RESULT_FORMAT=JSON"))
+        self.assertNotIn("role=", url)
+        f, notes = plan.parse_url(c, "jdbc:snowflake://xy1.snowflakecomputing.com/?db=S&warehouse=W&role=R&token=TokZZ")
+        self.assertEqual((f["database"], f["warehouse"], f["role"]), ("S", "W", "R"))
+        self.assertNotIn("TokZZ", json.dumps(f))
+        props = plan.vs_properties(c, {"connection": "C"}, cfg)
+        self.assertEqual((props["CATALOG_NAME"], props["SCHEMA_NAME"]), ("SHOP", "PUBLIC"))
+        self.assertIn("trust store", plan.unavailable_reason(c))
+        os.environ["EXAKIT_VS_ALLOW_UNAVAILABLE"] = "1"
+        try:
+            self.assertIsNone(plan.unavailable_reason(c))
+        finally:
+            os.environ.pop("EXAKIT_VS_ALLOW_UNAVAILABLE")
+        self.assertEqual(plan.connector_env(c, {"EXAKIT_VS_WAREHOUSE": "W2", "EXAKIT_VS_ROLE": "R2"}),
+                         {"warehouse": "W2", "role": "R2"})
+
+    def test_exasol(self):
+        c, cfg = self._cfg("exasol", host="localhost", schema="SALES", fingerprint="AB12")
+        self.assertIsNone(plan.driver(c))
+        self.assertEqual(plan.build_url(c, "localhost", cfg, "verify"), "jdbc:exa:localhost/AB12:8563")
+        self.assertEqual(plan.build_url(c, "localhost", cfg, "encrypt"), "jdbc:exa:localhost/nocertcheck:8563")
+        self.assertEqual(plan.extra_connections(c, {"connection": "C"}, "localhost", cfg, "verify"),
+                         [("_EXA", "localhost/AB12:8563")])
+        local = plan.vs_properties(c, {"connection": "C"}, cfg, "localhost")
+        self.assertEqual(local.get("IS_LOCAL"), "true")
+        remote = plan.vs_properties(c, {"connection": "C"}, dict(cfg, host="10.0.0.5"), "10.0.0.5")
+        self.assertEqual((remote["IMPORT_FROM_EXA"], remote["EXA_CONNECTION"]), ("true", "C_EXA"))
+        self.assertEqual(plan.tls_start(c, "loopback", None), "verify")
+        self.assertEqual(artifacts.describe(c)["driver_name"], None)
+        p = plan.build_plan(c, {"name": "X", "host": "localhost"}, {})
+        self.assertNotIn("driver", [st["step"] for st in p["steps"]])
+
+    def test_probe_kinds(self):
+        self.assertIn('IMPORT FROM EXA AT "C_EXA"', sql.import_probe("C_EXA", None, "SELECT 1", "exa"))
+        self.assertEqual(lifecycle._probe_target(CS["exasol"], "C"), ("C_EXA", None, "exa"))
+        self.assertEqual(lifecycle._probe_target(CS["mysql"], "C"), ("C", "EXAKIT_MYSQL", "jdbc"))
+
+    def test_render(self):
+        self.assertEqual(plan.render("{a|upper}-{b|lower}-{c}", {"a": "x", "b": "Y", "c": None}), "X-y-")
+        with self.assertRaises(plan.PlanError):
+            plan.render("{a|nope}", {"a": "x"})
 
 
 class UiTwin(unittest.TestCase):

@@ -138,14 +138,15 @@ def describe(connector):
     """What a source built from this connector right now records about its
     artifacts - so it can later be checked and removed by what it USES, not
     by whatever the connector pins after a kit update."""
+    drv = connector.get("driver") if (connector.get("driver") or {}).get("settings") else None
     return {
         "adapter_key": "%s/%s" % (connector["id"], connector["adapter"]["version"]),
         "adapter_version": connector["adapter"]["version"],
         "adapter_file": connector["adapter"]["file"],
         "bucket": bucket_rel(connector).as_posix(),
-        "driver_name": connector["driver"]["settings"]["DRIVERNAME"],
-        "driver_file": connector["driver"]["file"],
-        "driver_version": connector["driver"]["version"],
+        "driver_name": drv["settings"]["DRIVERNAME"] if drv else None,
+        "driver_file": drv["file"] if drv else None,
+        "driver_version": drv["version"] if drv else None,
     }
 
 
@@ -155,7 +156,7 @@ def stage_adapter(exa_root, connector, adapter_path, driver_path):
     rel = bucket_rel(connector)
     host_dir = Path(exa_root) / BUCKET_DIR / rel
     jars = [adapter_path]
-    if driver_path is not None and not connector["driver"].get("bundled_in_adapter"):
+    if driver_path is not None and not (connector.get("driver") or {}).get("bundled_in_adapter"):
         jars.append(driver_path)
     sql_paths = []
     for p in jars:

@@ -61,7 +61,11 @@ def comment_connection(conn):
     return "COMMENT ON CONNECTION %s IS %s" % (ident(conn), literal(MARKER))
 
 
-def import_probe(conn, driver_name, statement="SELECT 1"):
+def import_probe(conn, driver_name, statement="SELECT 1", kind="jdbc"):
+    """A bounded read through the database's import side. kind 'exa' reads
+    through an EXA connection (Exasol to Exasol, no JDBC driver involved)."""
+    if kind == "exa":
+        return "SELECT * FROM (IMPORT FROM EXA AT %s STATEMENT %s)" % (ident(conn), literal(statement))
     drv = " DRIVER = %s" % literal(driver_name) if driver_name else ""
     return "SELECT * FROM (IMPORT FROM JDBC%s AT %s STATEMENT %s)" % (drv, ident(conn), literal(statement))
 

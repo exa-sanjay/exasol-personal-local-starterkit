@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "id": "sqlserver",
+  "label": "SQL Server",
+  "aliases": ["mssql", "ms-sql", "azure-sql"],
+  "adapter": {
+    "repo": "exasol/sqlserver-virtual-schema",
+    "version": "3.0.1",
+    "file": "virtual-schema-dist-14.0.4-sqlserver-3.0.1.jar",
+    "url": "https://github.com/exasol/sqlserver-virtual-schema/releases/download/3.0.1/virtual-schema-dist-14.0.4-sqlserver-3.0.1.jar",
+    "sha256_url": "https://github.com/exasol/sqlserver-virtual-schema/releases/download/3.0.1/virtual-schema-dist-14.0.4-sqlserver-3.0.1.jar.sha256",
+    "sha256": "28097686ef11b59ff7045650d05f6254c2701d5dd47ca99c521943bc5e1e16c5",
+    "license": "MIT"
+  },
+  "driver": {
+    "name": "Microsoft JDBC Driver for SQL Server",
+    "version": "13.4.0.jre8",
+    "file": "mssql-jdbc-13.4.0.jre8.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/microsoft/sqlserver/mssql-jdbc/13.4.0.jre8/mssql-jdbc-13.4.0.jre8.jar",
+    "sha1_url": "https://repo.maven.apache.org/maven2/com/microsoft/sqlserver/mssql-jdbc/13.4.0.jre8/mssql-jdbc-13.4.0.jre8.jar.sha1",
+    "sha256": "81b6b9860c713b53c237bd31f6d650251517818a83d93e5e99fdff250a25f8d3",
+    "license": "MIT",
+    "bundled_in_adapter": false,
+    "settings": {
+      "DRIVERNAME": "EXAKIT_SQLSERVER",
+      "PREFIX": "jdbc:sqlserver:",
+      "DRIVERMAIN": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "FETCHSIZE": "100000",
+      "INSERTSIZE": "-1",
+      "NOSECURITY": "YES"
+    }
+  },
+  "script": {
+    "class": "com.exasol.adapter.RequestDispatcher",
+    "jvm_options": ["-Duser.timezone=UTC"]
+  },
+  "url": {
+    "scheme": "jdbc:sqlserver://",
+    "template": "jdbc:sqlserver://{host}:{port};databaseName={database}",
+    "quote_database": false,
+    "default_port": 1433,
+    "param_start": ";",
+    "param_separator": ";",
+    "allowed_params": ["encrypt", "trustServerCertificate", "loginTimeout", "applicationName", "applicationIntent", "hostNameInCertificate"],
+    "secret_params": ["password", "keyStoreSecret", "trustStorePassword"]
+  },
+  "inputs": [
+    {"id": "host", "label": "Host", "required": true},
+    {"id": "port", "label": "Port", "type": "port", "default": 1433},
+    {"id": "database", "label": "Database", "required": true},
+    {"id": "user", "label": "User", "required": true},
+    {"id": "password", "label": "Password", "secret": true, "required": true},
+    {"id": "schema", "label": "Schema", "default": "dbo", "required": true, "connection": false}
+  ],
+  "properties": {
+    "CATALOG_NAME": "{database}",
+    "SCHEMA_NAME": "{schema}"
+  },
+  "tls": {
+    "param": "encrypt",
+    "default": "encrypt",
+    "levels": {
+      "verify": {
+        "params": {"encrypt": "true", "trustServerCertificate": "false"},
+        "available": false,
+        "reason": "Exasol Personal's import process has an empty Java trust store, so it cannot verify any server certificate yet."
+      },
+      "encrypt": {"params": {"encrypt": "true", "trustServerCertificate": "true"}},
+      "none": {"params": {"encrypt": "false"}}
+    },
+    "from_url": {"true": "encrypt", "strict": "verify", "mandatory": "encrypt", "false": "none", "optional": "none"}
+  },
+  "check": {
+    "statement": "SELECT 1",
+    "schema": "SELECT CASE WHEN SCHEMA_ID({schema}) IS NULL THEN 'missing' WHEN HAS_PERMS_BY_NAME({schema}, 'SCHEMA', 'SELECT') = 1 THEN 'ok' ELSE 'denied' END"
+  },
+  "notes": [
+    "SQL Server's own certificates are usually self-signed; the connection is encrypted without verifying it (trustServerCertificate=true).",
+    "Tables keep the source's spelling, so quote them, e.g. \"Orders\"."
+  ]
+}

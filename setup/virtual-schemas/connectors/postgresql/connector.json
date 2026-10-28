@@ -50,7 +50,7 @@
     {"id": "database", "label": "Database", "required": true},
     {"id": "user", "label": "User", "required": true},
     {"id": "password", "label": "Password", "secret": true, "required": true},
-    {"id": "schema", "label": "Schema", "default": "public", "required": true}
+    {"id": "schema", "label": "Schema", "default": "public", "required": true, "connection": false}
   ],
   "properties": {
     "CATALOG_NAME": "{database}",

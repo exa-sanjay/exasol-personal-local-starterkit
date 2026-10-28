@@ -4,10 +4,18 @@ Everything here is pure: it decides WHAT a connect will do from the
 connector definition, the user's inputs and a snapshot of facts about the
 database, without touching either. lifecycle.py applies the plan; --dry-run
 prints it and stops.
+
+A connector is a folder: connector.json says what can be said as data, and
+an optional hooks.py says what cannot - a URL shape the generic parser does
+not know (SQL Server's ;databaseName=, Oracle's @//host/service), extra
+connection objects (Exasol's EXA connection), properties that depend on the
+host. Every hook has a generic default here, so most connectors need none.
 """
 
+import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 
 from . import net, sql
@@ -30,11 +38,24 @@ def load_connectors(root=None):
     found = {}
     for d in sorted(root.iterdir()) if root.is_dir() else []:
         f = d / "connector.json"
-        if f.is_file():
-            with open(f, "r", encoding="utf-8") as fh:
-                c = json.load(fh)
-            found[c["id"]] = c
+        if not f.is_file():
+            continue
+        with open(f, "r", encoding="utf-8") as fh:
+            c = json.load(fh)
+        h = d / "hooks.py"
+        if h.is_file():
+            spec = importlib.util.spec_from_file_location("exakit_vs_hooks_%s" % c["id"], h)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            c["_hooks"] = mod
+        found[c["id"]] = c
     return found
+
+
+def hook(connector, name):
+    """The connector's own implementation of `name`, or None."""
+    mod = connector.get("_hooks")
+    return getattr(mod, name, None) if mod else None
 
 
 def find_connector(connectors, name):
@@ -46,8 +67,27 @@ def find_connector(connectors, name):
         name, ", ".join(sorted(connectors))))
 
 
+def unavailable_reason(connector):
+    """Why this connector cannot be used on Exasol Personal yet, or None.
+    EXAKIT_VS_ALLOW_UNAVAILABLE=1 lets someone try anyway (against a real
+    account, to find out whether a newer Exasol Personal has fixed it)."""
+    if connector.get("available", True) is not False:
+        return None
+    if os.environ.get("EXAKIT_VS_ALLOW_UNAVAILABLE") == "1":
+        return None
+    return connector.get("unavailable_reason") or "this source is not supported yet"
+
+
+def driver(connector):
+    """The JDBC driver the database's import side needs registered, or None
+    (Exasol's own adapter reads through IMPORT FROM EXA instead)."""
+    d = connector.get("driver")
+    return d if d and d.get("settings") else None
+
+
 # --- inputs -----------------------------------------------------------------------
-# Precedence: explicit flag > EXAKIT_VS_* environment > pasted URL > prompt.
+# Precedence: explicit flag > EXAKIT_VS_* environment > pasted URL > what this
+# source was given last time > prompt or default.
 
 ENV = {
     "source": "EXAKIT_VS_SOURCE", "name": "EXAKIT_VS_NAME", "url": "EXAKIT_VS_JDBC_URL",
@@ -61,27 +101,54 @@ def from_env(environ=None):
     return {k: environ[v] for k, v in ENV.items() if environ.get(v)}
 
 
+def env_var(field_id):
+    return ENV.get(field_id, "EXAKIT_VS_%s" % field_id.upper())
+
+
+def connector_env(connector, environ=None):
+    """Connector-specific inputs (Snowflake's warehouse and role, ...) from
+    EXAKIT_VS_<ID>."""
+    environ = os.environ if environ is None else environ
+    out = {}
+    for f in connector["inputs"]:
+        if f.get("secret") or f["id"] in ENV:
+            continue
+        v = environ.get(env_var(f["id"]))
+        if v:
+            out[f["id"]] = v
+    return out
+
+
+def input_ids(connector):
+    return [f["id"] for f in connector["inputs"] if not f.get("secret")]
+
+
+def parse_url(connector, text):
+    fn = hook(connector, "parse_url")
+    return fn(connector, text) if fn else net.parse_url(connector, text)
+
+
 def merge_url(connector, inputs, notes):
     """Fold a pasted connection string into the field inputs; explicit fields
     win over what the URL says."""
     if not inputs.get("url"):
         return inputs
-    fields, url_notes = net.parse_url(connector, inputs["url"])
+    fields, url_notes = parse_url(connector, inputs["url"])
     notes.extend(url_notes)
     out = dict(inputs)
-    for k in ("host", "port", "database", "user"):
+    for k in set(input_ids(connector)) | {"host", "port", "database", "user"}:
         if fields.get(k) is not None and not out.get(k):
             out[k] = fields[k]
     params = dict(fields.get("params") or {})
-    tls_param = connector["tls"]["param"]
-    if tls_param in params and not out.get("tls"):
+    tls_param = connector["tls"].get("param")
+    if tls_param and tls_param in params and not out.get("tls"):
         mapped = connector["tls"].get("from_url", {}).get(params[tls_param])
         if mapped:
             out["tls"] = mapped
     # The kit owns the TLS parameters; everything else allowed rides along.
     tls_keys = set()
     for lvl in connector["tls"]["levels"].values():
-        tls_keys.update(lvl["params"])
+        tls_keys.update(lvl.get("params", {}))
     out["params"] = {k: v for k, v in params.items() if k not in tls_keys}
     return out
 
@@ -91,7 +158,7 @@ def validate(connector, inputs):
     v["host"] = net.validate_host(v.get("host"))
     v["port"] = net.validate_port(v.get("port") or connector["url"]["default_port"])
     for f in connector["inputs"]:
-        if f.get("secret"):
+        if f.get("secret") or f["id"] in ("host", "port"):
             continue
         if f.get("required") and not v.get(f["id"]) and f.get("default") is None:
             raise PlanError("%s is required" % f["label"])
@@ -138,22 +205,65 @@ def tls_start(connector, host_class, requested):
         return requested
     default = connector["tls"].get("default", "encrypt")
     offer = tls_offer(connector, host_class)
+    if not offer:
+        raise PlanError("%s offers no usable TLS level for this host" % connector["label"])
     return default if default in offer else offer[0]
 
 
 def url_params(connector, level, extra):
     params = dict(extra or {})
-    params.update(connector["tls"]["levels"][level]["params"])
+    params.update(connector["tls"]["levels"][level].get("params", {}))
     return params
+
+
+def build_url(connector, host, inputs, level):
+    """The JDBC URL for the main connection. A hook builds it when the
+    connector's URL is not host:port/database?params (SQL Server, Oracle,
+    Snowflake, Exasol)."""
+    params = url_params(connector, level, inputs.get("params"))
+    fn = hook(connector, "build_url")
+    if fn:
+        return fn(connector, host, inputs, level, params)
+    return net.build_url(connector, host, inputs["port"], inputs.get("database"), params)
+
+
+def extra_connections(connector, names, host, inputs, level):
+    """[(name, target)] the connector needs beside the main JDBC connection,
+    all with the same credentials (Exasol: the EXA connection IMPORT FROM EXA
+    reads through)."""
+    fn = hook(connector, "extra_connections")
+    return list(fn(connector, names, host, inputs, level)) if fn else []
 
 
 # --- properties and the plan ----------------------------------------------------------
 
-def vs_properties(connector, conn_name, inputs):
-    props = {"CONNECTION_NAME": conn_name}
+_FIELD = re.compile(r"\{(\w+)(?:\|(\w+))?\}")
+
+
+def render(template, values):
+    """'{schema|upper}' -> the schema upper-cased. Filters: upper, lower."""
+    def sub(m):
+        v = "" if values.get(m.group(1)) is None else str(values.get(m.group(1)))
+        f = m.group(2)
+        if f == "upper":
+            return v.upper()
+        if f == "lower":
+            return v.lower()
+        if f:
+            raise PlanError("unknown filter %r in a connector template" % f)
+        return v
+    return _FIELD.sub(sub, template)
+
+
+def vs_properties(connector, names, inputs, host=None):
+    """names: the object names (connection, schema, extra connections)."""
+    fn = hook(connector, "properties")
+    if fn:
+        return fn(connector, names, inputs, host)
+    props = {"CONNECTION_NAME": names["connection"]}
+    values = {k: inputs.get(k, "") for k in input_ids(connector)}
     for k, tmpl in connector["properties"].items():
-        props[k] = tmpl.format(**{f["id"]: inputs.get(f["id"], "") for f in connector["inputs"]
-                                  if not f.get("secret")})
+        props[k] = render(tmpl, values)
     return props
 
 
@@ -170,6 +280,7 @@ def build_plan(connector, inputs, facts):
     schema_exists, schema_owned, adapter_schema_foreign, script_exists."""
     names = sql.object_names(inputs["name"])
     script = sql.adapter_script_name(connector["id"], connector["adapter"]["version"])
+    drv = driver(connector)
     steps = []
 
     def add(key, text, needed=True, consent=False):
@@ -188,14 +299,16 @@ def build_plan(connector, inputs, facts):
 
     add("java", "Install the Java runtime in the database (exasol slc install java)",
         not facts.get("java_installed"), consent=True)
-    add("download", "Download and verify %s %s and %s %s" % (
-        connector["label"], "adapter " + connector["adapter"]["version"],
-        connector["driver"]["name"], connector["driver"]["version"]),
-        not (facts.get("adapter_cached") and facts.get("driver_cached")))
+    what = "%s adapter %s" % (connector["label"], connector["adapter"]["version"])
+    if drv:
+        what += " and %s %s" % (drv["name"], drv["version"])
+    add("download", "Download and verify " + what,
+        not (facts.get("adapter_cached") and (facts.get("driver_cached") or not drv)))
     add("stage", "Stage the adapter in BucketFS (exakit-vs/%s/%s)" % (
         connector["id"], connector["adapter"]["version"]), not facts.get("adapter_staged"))
-    add("driver", "Register the JDBC driver %s" % connector["driver"]["settings"]["DRIVERNAME"],
-        not facts.get("driver_registered"))
+    if drv:
+        add("driver", "Register the JDBC driver %s" % drv["settings"]["DRIVERNAME"],
+            not facts.get("driver_registered"))
     add("restart", "Restart the database once, to activate the Java runtime",
         restart_needed(facts), consent=True)
     add("dns", "Link name resolution into the Java sandbox (temporary workaround)",
@@ -211,22 +324,29 @@ def build_plan(connector, inputs, facts):
         sql.ADAPTER_SCHEMA, script)), "restart_needed": restart_needed(facts), "steps": steps}
 
 
-# The fields that make up a source's connection. A re-run of connect that
-# changes any of them must rebuild the CONNECTION, which needs the password.
-CONNECTION_FIELDS = ("host", "port", "database", "user", "params", "tls")
+def connection_fields(connector):
+    """The inputs that make up a source's CONNECTION. A re-run of connect that
+    changes any of them must rebuild it, which needs the password; inputs
+    marked "connection": false (the source schema, used only by the virtual
+    schema) change without one."""
+    return [f["id"] for f in connector["inputs"]
+            if not f.get("secret") and f.get("connection", True)] + ["params", "tls"]
 
 
-def changed_fields(saved, inputs, level):
+def changed_fields(connector, saved, inputs, level):
+    fields = connection_fields(connector)
     if not saved:
-        return list(CONNECTION_FIELDS)
+        return fields
     want = dict(inputs, tls=level)
     out = []
-    for k in CONNECTION_FIELDS:
+    for k in fields:
         a, b = saved.get(k), want.get(k)
         if k == "params":
             a, b = a or {}, b or {}
-        if k == "port":
+        elif k == "port":
             a, b = int(a or 0), int(b or 0)
+        elif a in (None, "") and b in (None, ""):
+            continue
         if a != b:
             out.append(k)
     return out

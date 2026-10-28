@@ -161,7 +161,8 @@ def validate_host(host):
 def build_url(connector, host, port, database, params):
     url = connector["url"]
     h = "[%s]" % host if ":" in host and not host.startswith("[") else host
-    base = url["template"].format(host=h, port=port, database=quote(database or "", safe=""))
+    db = quote(database or "", safe="") if url.get("quote_database", True) else (database or "")
+    base = url["template"].format(host=h, port=port, database=db)
     if params:
         sep = url.get("param_separator", "&")
         first = url.get("param_start", "?")

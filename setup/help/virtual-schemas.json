@@ -3,7 +3,7 @@
   "id": "virtual-schemas",
   "kind": "component",
   "title": "Virtual Schemas",
-  "tagline": "Query an external database (PostgreSQL, ...) from Exasol, live, without loading it.",
+  "tagline": "Query an external database (PostgreSQL, MySQL, SQL Server, Oracle, Exasol) from Exasol, live, without loading it.",
   "role": "Part of the kit. A virtual schema makes the tables of another database appear in Exasol as VS_<NAME>: every query reads the source live, nothing is copied. exakit connect does all of the setup - adapter and JDBC driver downloaded and checksum-verified, staged where the database reads them, the database's Java runtime installed (one restart, asked first), the CONNECTION, adapter script and virtual schema created - and calls it ready only after rows came back.",
   "repo": "exasol/virtual-schemas",
   "docs": "https://github.com/exasol/virtual-schemas#readme",
@@ -94,6 +94,10 @@
       "effect": "The source user, and the source schema to expose."
     },
     {
+      "name": "EXAKIT_VS_WAREHOUSE, EXAKIT_VS_ROLE (and EXAKIT_VS_<FIELD> for any connector field)",
+      "effect": "Connector-specific answers, e.g. Snowflake's warehouse and role."
+    },
+    {
       "name": "EXAKIT_VS_PASSWORD_FILE",
       "effect": "A file holding the source password (UTF-8 or UTF-16). There is no --password option."
     },
@@ -108,14 +112,19 @@
     {
       "name": "EXAKIT_VS_DNS_WORKAROUND",
       "effect": "0 stops the kit linking name resolution into the database's Java runtime after each start; sources given by name are then reached by their address."
+    },
+    {
+      "name": "EXAKIT_VS_ALLOW_UNAVAILABLE",
+      "effect": "1 lets you try a source marked unavailable (Snowflake) - for checking whether a newer Exasol Personal has fixed what blocks it."
     }
   ],
   "notes": [
     "Every virtual schema is readable by the MCP read-only user, so your AI clients can see the source's data the moment it is connected.",
     "The password lives only in the database's CONNECTION object. The kit's admin user can still read it back through a script, as the owner of any Exasol connection can - use a read-only account on the source.",
-    "TLS: connections are encrypted by default, but the server's certificate is not verified - Exasol Personal's import process has no trust store yet. Use it only over networks you trust.",
+    "Sources and TLS: PostgreSQL, MySQL and SQL Server are encrypted without verifying the server's certificate (Exasol Personal's import process has no trust store yet); Oracle uses Native Network Encryption; another Exasol is verified by its certificate fingerprint. Snowflake is not available yet: its driver must verify certificates. An unencrypted link is offered only for hosts on this machine or a private network.",
     "Host names: Exasol Personal's Java runtime ships without name resolution. The kit links it in after every database start (the database's boot entry runs exakit start database for that); EXAKIT_VS_DNS_WORKAROUND=0 turns this off and the kit uses IP addresses instead.",
-    "localhost inside the database is the database itself. A source on this computer is reached through the container's host address, which exakit connect works out for you."
+    "localhost inside the database is the database itself. A source on this computer is reached through the container's host address, which exakit connect works out for you.",
+    "MySQL's driver (Connector/J) is GPL software the kit downloads onto this machine only."
   ],
   "troubleshooting": [
     {
