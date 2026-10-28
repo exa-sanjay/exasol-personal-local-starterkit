@@ -174,6 +174,8 @@ fi
 [ -f "$_lib_dir/exasol-vscode.sh" ] && . "$_lib_dir/exasol-vscode.sh"
 [ -f "$_lib_dir/json-tables.sh" ] && . "$_lib_dir/json-tables.sh"
 [ -f "$_lib_dir/exasol-scheduler.sh" ] && . "$_lib_dir/exasol-scheduler.sh"
+# Virtual schemas are part of the kit, not an add-on: exakit connect / source
+# hand their work to the engine this module bridges to.
 [ -f "$_lib_dir/virtual-schemas.sh" ] && . "$_lib_dir/virtual-schemas.sh"
 
 _runtime_type() {
@@ -975,26 +977,29 @@ _start_database() {
     return 0
 }
 
-# _exakit_addons_post_start — every database start ends here. An add-on that
-# has to redo something on a fresh database container defines <id>_post_start
-# (virtual-schemas re-links name resolution into the Java sandbox); generic, so
-# no add-on is named here. Best-effort: a hook can never fail the start.
-_exakit_addons_post_start() {
-    for _aps_id in $(exakit_marketplace_addons | cut -d'|' -f1); do
-        _aps_fn="$(_exakit_addon_fn "$_aps_id" post_start)"
-        command -v "$_aps_fn" >/dev/null 2>&1 || continue
-        "$_aps_fn" || true
-    done
+# _exakit_post_start — every database start ends here. Each start creates a
+# new database container, and what a fresh container loses has to be redone:
+# today that is the virtual-schemas sandbox links. Best-effort: nothing here
+# can fail the start.
+_exakit_post_start() {
+    command -v virtual_schemas_post_start >/dev/null 2>&1 && virtual_schemas_post_start
     return 0
 }
 
-# cmd_connect / cmd_source — external databases as virtual schemas. The work
-# is the virtual-schemas engine's; these only hand it the arguments, and its
-# exit code is the command's.
+# cmd_connect / cmd_source — external databases as virtual schemas. Part of
+# the kit, so there is nothing to install first: the work is the engine's,
+# these hand it the arguments, and its exit code is the command's.
 cmd_connect() {
     _require_install
     command -v virtual_schemas_run >/dev/null 2>&1 || \
         reject "This kit copy does not carry virtual schemas yet. Update the kit first: exakit update"
+    # A source needs every database start to go through `exakit start
+    # database` (the post-start step re-links its name resolution). A boot entry
+    # written by an older kit still runs the launcher directly; rewrite it now,
+    # the moment it starts to matter. Idempotent, and nothing without autostart.
+    if _exakit_autostart_registered database 2>/dev/null; then
+        _exakit_autostart_register database >/dev/null 2>&1 || true
+    fi
     virtual_schemas_run connect "$@"
 }
 cmd_source() {
@@ -1016,7 +1021,7 @@ cmd_start() {
         _exakit_log_file "INFO  start scoped to $EXAKIT_SERVICE_SCOPE"
         if [ "$EXAKIT_SERVICE_SCOPE" = "database" ]; then
             _start_database || return $?
-            _exakit_addons_post_start
+            _exakit_post_start
             return 0
         fi
         # One add-on was asked for, so only that one is touched: the database
@@ -1033,7 +1038,7 @@ cmd_start() {
     fi
     # Everything the kit runs, database first, then every add-on service.
     _start_database
-    _exakit_addons_post_start
+    _exakit_post_start
     for _start_id in $(exakit_service_ids); do
         [ "$_start_id" = "database" ] && continue
         exakit_service_start "$_start_id" || true

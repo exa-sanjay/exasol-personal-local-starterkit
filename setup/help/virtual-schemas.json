@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "id": "virtual-schemas",
+  "kind": "component",
+  "title": "Virtual Schemas",
+  "tagline": "Query an external database (PostgreSQL, ...) from Exasol, live, without loading it.",
+  "role": "Part of the kit. A virtual schema makes the tables of another database appear in Exasol as VS_<NAME>: every query reads the source live, nothing is copied. exakit connect does all of the setup - adapter and JDBC driver downloaded and checksum-verified, staged where the database reads them, the database's Java runtime installed (one restart, asked first), the CONNECTION, adapter script and virtual schema created - and calls it ready only after rows came back.",
+  "repo": "exasol/virtual-schemas",
+  "docs": "https://github.com/exasol/virtual-schemas#readme",
+  "installed_by": "Part of the kit - nothing to install. The first exakit connect installs the database's Java runtime (one restart, asked first).",
+  "platforms": "Wherever the kit runs the Exasol Personal runtime: macOS, Linux (including WSL) and Windows. On macOS the kit cannot reach the database container, so a source given by host name is reached by its address instead.",
+  "quickstart": [
+    {
+      "step": "Connect a source",
+      "run": "exakit connect",
+      "note": "Pick the source type, paste a JDBC URL or type host, port and database, then the user and password (asked hidden)."
+    },
+    {
+      "step": "Query it",
+      "run": "exakit sql 'SELECT * FROM VS_SALES.\"orders\" LIMIT 10'",
+      "note": "Names keep the source's spelling, so they go in double quotes. In PowerShell write \\\" for each inner quote."
+    },
+    {
+      "step": "Keep it healthy",
+      "run": "exakit source check sales",
+      "note": "Repairs what a restart or an outside change can undo, then proves the source still answers."
+    }
+  ],
+  "commands": [
+    {
+      "command": "exakit connect",
+      "options": "[<source>] [--name <name>] [--url <jdbc-url>] [--user <u>] [--schema <s>] [--tls encrypt|none] [--password-file <path>] [--yes] [--dry-run] [--json]",
+      "summary": "Connect an external database as a virtual schema.",
+      "examples": [
+        "exakit connect",
+        "exakit connect postgresql --name sales --url jdbc:postgresql://db.example.com:5432/shop --user reader --schema public --password-file ~/pg.pw",
+        "exakit connect pg --name sales --dry-run"
+      ]
+    },
+    {
+      "command": "exakit source list",
+      "options": "[--json]",
+      "summary": "Every connected source, its TLS level and last check.",
+      "examples": [
+        "exakit source list"
+      ]
+    },
+    {
+      "command": "exakit source show|check|refresh <name>",
+      "options": "[--json]",
+      "summary": "Details; repair and prove; re-read the source's tables and columns.",
+      "examples": [
+        "exakit source check sales",
+        "exakit source refresh sales"
+      ]
+    },
+    {
+      "command": "exakit source reauth <name>",
+      "options": "[--user <u>] [--password-file <path> | --password-stdin] [--json]",
+      "summary": "Replace the stored user and password; the old ones stay until the new ones work.",
+      "examples": [
+        "exakit source reauth sales --password-file ~/pg.pw"
+      ]
+    },
+    {
+      "command": "exakit source remove <name>",
+      "options": "[--dry-run] [--yes] [--json]",
+      "summary": "Drop the virtual schema and connection, and whatever no other source uses.",
+      "examples": [
+        "exakit source remove sales --dry-run",
+        "exakit source remove sales --yes"
+      ]
+    }
+  ],
+  "environment": [
+    {
+      "name": "EXAKIT_VS_SOURCE",
+      "effect": "The source type for a run without a terminal (postgresql, or an alias such as pg)."
+    },
+    {
+      "name": "EXAKIT_VS_NAME",
+      "effect": "The source's name; the virtual schema becomes VS_<NAME>."
+    },
+    {
+      "name": "EXAKIT_VS_JDBC_URL",
+      "effect": "The connection as a JDBC URL (or postgres:// URI). Any password in it is removed and not used."
+    },
+    {
+      "name": "EXAKIT_VS_HOST, EXAKIT_VS_PORT, EXAKIT_VS_DATABASE",
+      "effect": "The connection as fields instead of a URL."
+    },
+    {
+      "name": "EXAKIT_VS_USER, EXAKIT_VS_SCHEMA",
+      "effect": "The source user, and the source schema to expose."
+    },
+    {
+      "name": "EXAKIT_VS_PASSWORD_FILE",
+      "effect": "A file holding the source password (UTF-8 or UTF-16). There is no --password option."
+    },
+    {
+      "name": "EXAKIT_VS_TLS",
+      "effect": "encrypt (the default) or none - none only for a host on this machine or a private network. Exasol Personal cannot verify server certificates yet."
+    },
+    {
+      "name": "EXAKIT_CONFIRM_RUNTIME_UPDATE",
+      "effect": "1 (or --yes) consents to the one database restart the Java runtime needs."
+    },
+    {
+      "name": "EXAKIT_VS_DNS_WORKAROUND",
+      "effect": "0 stops the kit linking name resolution into the database's Java runtime after each start; sources given by name are then reached by their address."
+    }
+  ],
+  "notes": [
+    "Every virtual schema is readable by the MCP read-only user, so your AI clients can see the source's data the moment it is connected.",
+    "The password lives only in the database's CONNECTION object. The kit's admin user can still read it back through a script, as the owner of any Exasol connection can - use a read-only account on the source.",
+    "TLS: connections are encrypted by default, but the server's certificate is not verified - Exasol Personal's import process has no trust store yet. Use it only over networks you trust.",
+    "Host names: Exasol Personal's Java runtime ships without name resolution. The kit links it in after every database start (the database's boot entry runs exakit start database for that); EXAKIT_VS_DNS_WORKAROUND=0 turns this off and the kit uses IP addresses instead.",
+    "localhost inside the database is the database itself. A source on this computer is reached through the container's host address, which exakit connect works out for you."
+  ],
+  "troubleshooting": [
+    {
+      "symptom": "The database cannot reach host:port",
+      "remedy": "The connection starts inside the database container, not on this PC. Publish the source's port; a company network may be unreachable over a VPN that does not route WSL/Podman traffic."
+    },
+    {
+      "symptom": "UnknownHostException, or 'could not resolve' after a restart",
+      "remedy": "exakit source check <name> re-links name resolution into the Java runtime."
+    },
+    {
+      "symptom": "The source refused the user name or password",
+      "remedy": "exakit source reauth <name> (after a failed first connect: run exakit connect again)."
+    },
+    {
+      "symptom": "object VS_X.ORDERS not found, but the table is listed",
+      "remedy": "Names keep the source's spelling: SELECT * FROM VS_X.\"orders\". In PowerShell escape the inner quotes, or use exakit sql --file."
+    },
+    {
+      "symptom": "The encrypted connection failed",
+      "remedy": "If the source has no TLS: exakit connect <type> --name <name> --tls none (hosts on this machine or a private network only)."
+    }
+  ],
+  "see_also": [
+    "exakit sql",
+    "exakit data-load"
+  ]
+}

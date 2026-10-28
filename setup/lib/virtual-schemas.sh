@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# virtual-schemas.sh — virtual-schemas (external databases as virtual
-# schemas): the bridge from `exakit connect` / `exakit source` to the engine.
+# virtual-schemas.sh — virtual schemas (external databases queried live from
+# Exasol): the bridge from `exakit connect` / `exakit source` to the engine.
 #
-# A MARKETPLACE ADD-ON: never installed by the setup scripts.
+# Part of the kit itself, not a marketplace add-on: nothing to install. The
+# engine ships with every kit copy (setup/virtual-schemas) and runs on the
+# kit's own Python - the pyexasol venv, the same interpreter the kit already
+# validates against the database. Adapters and JDBC drivers are fetched per
+# source, by the engine, on demand, and the database's Java runtime is
+# installed on the first connect (one restart, asked first).
 #
-# All logic lives in ONE Python engine (setup/virtual-schemas/engine), shared
-# with the PowerShell twin; this file only finds the kit-managed Python - the
-# pyexasol venv, the same interpreter the kit already validates against the
-# database - and runs the engine with it. Nothing is pip-installed for this
-# add-on, and nothing here knows about any particular source type: those are
+# All logic lives in ONE Python engine, shared with the PowerShell twin; this
+# file only finds the interpreter and runs the engine. Nothing here knows about
+# any particular source type: those are
 # setup/virtual-schemas/connectors/<id>/connector.json.
 #
 # Secrets: the engine reads the source password from a hidden prompt,
 # --password-file, --password-stdin or EXAKIT_VS_PASSWORD_FILE. It is never
 # an argument, never in a file the kit writes, never in a log.
 
-EXAKIT_VIRTUAL_SCHEMAS_VERSION="${EXAKIT_VIRTUAL_SCHEMAS_VERSION:-}"
-EXAKIT_VIRTUAL_SCHEMAS_VERSION_FALLBACK="${EXAKIT_VIRTUAL_SCHEMAS_VERSION_FALLBACK:-0.1.0}"
+EXAKIT_VIRTUAL_SCHEMAS_HOME="${EXAKIT_VIRTUAL_SCHEMAS_HOME:-$EXAKIT_HOME/sources}"
 
 _VS_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 
@@ -71,7 +73,7 @@ virtual_schemas_run() {
 # Quiet and best-effort: a start never fails because of it, and a machine
 # with no sources does nothing at all.
 virtual_schemas_post_start() {
-    ls "$EXAKIT_HOME/sources"/*/config.json >/dev/null 2>&1 || return 0
+    ls "$EXAKIT_VIRTUAL_SCHEMAS_HOME"/*/config.json >/dev/null 2>&1 || return 0
     # A SUBSHELL, not just `|| true`: virtual_schemas_run exits (reject, a
     # missing venv), and an exit in this shell would end `exakit start`
     # before the add-on services it still has to start.

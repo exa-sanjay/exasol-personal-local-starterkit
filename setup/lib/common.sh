@@ -11333,12 +11333,24 @@ exakit_service_stop() {
 # refused the entry at every login while `exakit autostart` had already
 # reported success. A newline is the one delimiter none of these arguments can
 # contain.
+#
+# THE DATABASE BOOTS THROUGH `exakit start database`, not the launcher. That is
+# the path a manual start takes: it clears a leftover runner holding the port,
+# turns the launcher's failed-deployment state into a deploy, records a failure
+# `exakit status` can report - and ends in the post-start step that redoes what
+# every fresh database container loses (the virtual-schemas sandbox links). The
+# launcher stays the fallback for a machine whose exakit command is missing.
 _exakit_service_autostart_command() {
     if [ "$1" = "database" ]; then
         case "$(exakit_installation_runtime_type 2>/dev/null || true)" in
             personal)
-                _sac_cli="$(personal_cli 2>/dev/null || true)"
-                [ -n "$_sac_cli" ] && printf '%s\nstart\n' "$_sac_cli"
+                _sac_exakit="${EXAKIT_BIN_DIR:-$HOME/.local/bin}/exakit"
+                if [ -x "$_sac_exakit" ]; then
+                    printf '%s\nstart\ndatabase\n' "$_sac_exakit"
+                else
+                    _sac_cli="$(personal_cli 2>/dev/null || true)"
+                    [ -n "$_sac_cli" ] && printf '%s\nstart\n' "$_sac_cli"
+                fi
                 ;;
         esac
         return 0
@@ -11356,8 +11368,9 @@ _exakit_autostart_label() { printf '%s.%s\n' "$EXAKIT_AUTOSTART_PREFIX" "$1"; }
 # testing whether the command line began with "podman start".
 #
 # The guess was wrong for the one service every Linux install registers. The
-# database's boot command is "$(personal_cli) start" — ~/.local/bin/exasol
-# start — which never matched, so the database got Type=simple with
+# database's boot command was "$(personal_cli) start" — ~/.local/bin/exasol
+# start (today `exakit start database`, which hands off the same way) — which
+# never matched, so the database got Type=simple with
 # Restart=on-failure. Two bites followed. A clean start exits 0, so after boot
 # `systemctl --user status` reported inactive (dead) while the database was up
 # and fine. And a start that failed at boot for a transient reason (rootless

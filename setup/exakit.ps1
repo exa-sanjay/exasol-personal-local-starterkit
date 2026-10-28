@@ -124,6 +124,9 @@ if (Test-Path (Join-Path $libDir "dbt-exasol.ps1")) { . (Join-Path $libDir "dbt-
 if (Test-Path (Join-Path $libDir "exasol-vscode.ps1")) { . (Join-Path $libDir "exasol-vscode.ps1") }
 if (Test-Path (Join-Path $libDir "json-tables.ps1")) { . (Join-Path $libDir "json-tables.ps1") }
 if (Test-Path (Join-Path $libDir "exasol-scheduler.ps1")) { . (Join-Path $libDir "exasol-scheduler.ps1") }
+# Virtual schemas are part of the kit, not an add-on: exakit connect / source
+# hand their work to the engine this module bridges to.
+if (Test-Path (Join-Path $libDir "virtual-schemas.ps1")) { . (Join-Path $libDir "virtual-schemas.ps1") }
 if (Test-Path (Join-Path $libDir "help.ps1")) { . (Join-Path $libDir "help.ps1") }
 
 
@@ -920,6 +923,47 @@ function Start-ExakitDatabase {
     try { if ((Get-ExakitRuntimeStatus) -like "running*") { Clear-ExakitRuntimeFailureNote } } catch { }
 }
 
+# Every database start ends here. Each start creates a new database container,
+# and what a fresh container loses has to be redone: today that is the
+# virtual-schemas sandbox links. Best-effort: nothing here can fail the start.
+# Twin of _exakit_post_start in setup/exakit.
+function Invoke-ExakitPostStart {
+    if (-not (Get-Command Invoke-VirtualSchemasPostStart -ErrorAction SilentlyContinue)) { return }
+    try { Invoke-VirtualSchemasPostStart } catch { Write-ExakitLog "WARN" "virtual-schemas post-start: $_" }
+}
+
+# exakit connect / exakit source - external databases as virtual schemas. Part
+# of the kit, so there is nothing to install first: the work is the engine's,
+# these hand it the arguments, and its exit code is the command's.
+# Twins of cmd_connect / cmd_source.
+function Invoke-CmdConnect {
+    param([string[]]$Arguments = @())
+    Assert-ExakitInstalled
+    if (-not (Get-Command Invoke-VirtualSchemasEngine -ErrorAction SilentlyContinue)) {
+        Deny-ExakitInput "This kit copy does not carry virtual schemas yet. Update the kit first: exakit update"
+    }
+    # A source needs every database start to go through `exakit start
+    # database` (the post-start step re-links its name resolution). A Startup
+    # entry written by an older kit still runs the launcher directly; rewrite
+    # it now, the moment it starts to matter. Idempotent, and nothing without
+    # autostart. Twin of the same block in cmd_connect.
+    if (Test-ExakitAutostartRegistered -Id "database") {
+        try { [void](Register-ExakitAutostart -Id "database") } catch { }
+    }
+    Invoke-VirtualSchemasEngine -Arguments (@("connect") + @($Arguments))
+    exit $script:VirtualSchemasExitCode
+}
+
+function Invoke-CmdSource {
+    param([string[]]$Arguments = @())
+    Assert-ExakitInstalled
+    if (-not (Get-Command Invoke-VirtualSchemasEngine -ErrorAction SilentlyContinue)) {
+        Deny-ExakitInput "This kit copy does not carry virtual schemas yet. Update the kit first: exakit update"
+    }
+    Invoke-VirtualSchemasEngine -Arguments (@("source") + @($Arguments))
+    exit $script:VirtualSchemasExitCode
+}
+
 function Invoke-CmdStart {
     param([string[]]$Scope = @())
     $id = Resolve-ExakitServiceScope -Verb "start" -Arguments $Scope
@@ -929,7 +973,7 @@ function Invoke-CmdStart {
     Initialize-ExakitLogging
     if ($id) {
         Write-ExakitLog "INFO" "start scoped to $id"
-        if ($id -eq "database") { Start-ExakitDatabase; return }
+        if ($id -eq "database") { Start-ExakitDatabase; Invoke-ExakitPostStart; return }
         # One add-on was asked for, so only that one is touched: the database
         # is NOT started on its behalf. Started against a stopped database an
         # add-on would only sit there failing to connect, so say what is
@@ -943,6 +987,7 @@ function Invoke-CmdStart {
     }
     # Everything the kit runs, database first, then every add-on service.
     Start-ExakitDatabase
+    Invoke-ExakitPostStart
     foreach ($sid in (Get-ExakitServiceIds)) {
         if ($sid -eq "database") { continue }
         Start-ExakitService -Id $sid
@@ -3733,6 +3778,11 @@ try {
         }
         "autostart"    { Invoke-CmdAutostart -Action (($RestArgs | Select-Object -First 1)) }
         "data-load"    { Invoke-CmdDataLoad -Argument ($RestArgs | Select-Object -First 1) }
+        # The engine parses and refuses its own options (exit 2, a JSON object
+        # under --json), so these two arms pass everything through untouched.
+        # Twins of the connect/source arms in setup/exakit.
+        "connect"      { Invoke-CmdConnect -Arguments @($RestArgs) }
+        "source"       { Invoke-CmdSource -Arguments @($RestArgs) }
         "mcp-setup"    {
             # Options are refused, not ignored: `mcp-setup --clients x` used to run
             # the plain setup, say "already connected" and exit 0. Twin of cmd_mcp_setup.

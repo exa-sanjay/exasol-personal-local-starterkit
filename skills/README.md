@@ -35,6 +35,7 @@ user's request actually needs, not a manual for the whole kit.
 | [`exasol-mcp`](exasol-mcp/SKILL.md) | Connecting AI clients over MCP, diagnosing `mcp-doctor`, repairing config drift, proving the read-only user really is read-only. |
 | [`exasol-pyexasol`](exasol-pyexasol/SKILL.md) | Querying the database from Python — the right interpreter, the TLS setting the self-signed certificate needs, reading credentials safely. |
 | [`exakit-lifecycle`](exakit-lifecycle/SKILL.md) | Operating the kit itself — versions and what changed, updates, logs, the command surface, where the credential files live, and uninstalling with `--dry-run` first. |
+| [`exasol-virtual-schemas`](exasol-virtual-schemas/SKILL.md) | Querying an external database (PostgreSQL) live through a virtual schema: `exakit connect`, the source lifecycle, quoted names, and the TLS and host-name limits of Exasol Personal. |
 
 **The wider Exasol ecosystem** — installed with the kit; it catalogs tools that are *not* part of it
 

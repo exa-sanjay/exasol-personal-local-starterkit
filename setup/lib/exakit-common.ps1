@@ -6421,10 +6421,18 @@ function Register-ExakitAutostart {
     if ($Id -eq "database") {
         switch (Get-RuntimeType) {
             "personal" {
-                # No daemon honours a restart policy here: the launcher starts
-                # the deployment, so the Startup entry runs it - the same shape
-                # the sh side registers through the platform supervisor.
-                $command = '"' + (Get-PersonalCli) + '" start'
+                # No daemon honours a restart policy here, so the Startup entry
+                # starts the deployment itself - through `exakit start database`,
+                # the path a manual start takes, which also runs the post-start
+                # step (the virtual-schemas sandbox links). The
+                # launcher is the fallback when the exakit command is missing.
+                # Twin of _exakit_service_autostart_command in common.sh.
+                $exakitCmd = Join-Path $script:BinDir "exakit.cmd"
+                if (Test-Path $exakitCmd) {
+                    $command = '"' + $exakitCmd + '" start database'
+                } else {
+                    $command = '"' + (Get-PersonalCli) + '" start'
+                }
             }
             default { return $false }
         }

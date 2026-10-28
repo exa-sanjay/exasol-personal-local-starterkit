@@ -64,7 +64,7 @@ def _parser():
             a.add_argument("--dry-run", action="store_true")
             a.add_argument("--yes", "-y", action="store_true")
 
-    h = sub.add_parser("hook")
+    h = sub.add_parser("hook", allow_abbrev=False)
     h.add_argument("event", choices=["post-start"])
     h.add_argument("--json", "-j", action="store_true")
     return p
