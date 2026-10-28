@@ -530,6 +530,23 @@ class OtherConnectors(unittest.TestCase):
         self.assertEqual(lifecycle._probe_target(CS["exasol"], "C"), ("C_EXA", None, "exa"))
         self.assertEqual(lifecycle._probe_target(CS["mysql"], "C"), ("C", "EXAKIT_MYSQL", "jdbc"))
 
+    def test_bare_endpoint(self):
+        # What a cloud console shows (an RDS endpoint) is accepted as the URL.
+        rds = "db1.c54yea04y0f8.ap-south-1.rds.amazonaws.com"
+        f, notes = plan.parse_url(CS["postgresql"], rds)
+        self.assertEqual((f["host"], f.get("port"), notes), (rds, None, []))
+        f, _ = plan.parse_url(CS["postgresql"], rds + ":5433/shop")
+        self.assertEqual((f["host"], f["port"], f["database"]), (rds, 5433, "shop"))
+        f, _ = plan.parse_url(CS["oracle"], "ora.example.com:1521/FREEPDB1")
+        self.assertEqual(f["database"], "FREEPDB1")
+        f, _ = plan.parse_url(CS["exasol"], "exa.example.com:8563/ignored")
+        self.assertNotIn("database", f)
+        merged = plan.merge_url(CS["postgresql"], {"url": rds, "database": "app"}, [])
+        self.assertEqual((merged["host"], merged["database"]), (rds, "app"))
+        for bad in ("jdbc:mysql://x:3306/db", "host:port", "a b"):
+            with self.assertRaises(net.UrlError):
+                plan.parse_url(CS["postgresql"], bad)
+
     def test_render(self):
         self.assertEqual(plan.render("{a|upper}-{b|lower}-{c}", {"a": "x", "b": "Y", "c": None}), "X-y-")
         with self.assertRaises(plan.PlanError):

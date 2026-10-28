@@ -13,7 +13,7 @@
     {
       "step": "Connect a source",
       "run": "exakit connect",
-      "note": "Pick the source type, paste a JDBC URL or type host, port and database, then the user and password (asked hidden)."
+      "note": "Pick the source type, paste a JDBC URL or the endpoint host name a cloud console shows (host, host:port or host:port/database), or type host, port and database, then the user and password (asked hidden)."
     },
     {
       "step": "Query it",

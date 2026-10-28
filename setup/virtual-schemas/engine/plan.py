@@ -123,7 +123,21 @@ def input_ids(connector):
     return [f["id"] for f in connector["inputs"] if not f.get("secret")]
 
 
+_BARE_ENDPOINT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?::(\d{1,5}))?(?:/([A-Za-z0-9_$.-]+))?/?$")
+
+
 def parse_url(connector, text):
+    # A cloud console (RDS, Azure SQL, Cloud SQL) shows the endpoint as a bare
+    # host name, and that is what people paste: host, host:port or
+    # host:port/database is taken as the fields it names, for every source.
+    m = _BARE_ENDPOINT.match((text or "").strip())
+    if m:
+        fields = {"host": m.group(1), "params": {}}
+        if m.group(2):
+            fields["port"] = int(m.group(2))
+        if m.group(3) and "database" in input_ids(connector):
+            fields["database"] = m.group(3)
+        return fields, []
     fn = hook(connector, "parse_url")
     return fn(connector, text) if fn else net.parse_url(connector, text)
 

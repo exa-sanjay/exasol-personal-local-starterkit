@@ -333,7 +333,7 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
 
     notes = []
     if tty and not inputs.get("url") and not inputs.get("host"):
-        pasted = u.ask("Connection string (paste a JDBC URL, or press Enter to type host/port/database)")
+        pasted = u.ask("Connection string (a JDBC URL, or the endpoint host[:port][/database] as a cloud console shows it; Enter to type the fields)")
         if pasted:
             inputs["url"], url_from = pasted, "prompt"
     try:
