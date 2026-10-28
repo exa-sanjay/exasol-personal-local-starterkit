@@ -12,17 +12,37 @@ import re
 import socket
 from urllib.parse import parse_qsl, quote, unquote
 
+from . import state
+
 LOOPBACK_NAMES = ("localhost", "localhost.localdomain", "ip6-localhost")
 HOST_ALIAS = "host.containers.internal"
-_HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}))*\.?$")
+# Underscores are not valid in DNS host names, but container and compose
+# service names use them all the time, and resolvers accept them.
+_HOST_RE = re.compile(r"^[A-Za-z0-9_]([A-Za-z0-9_-]{0,62})(\.[A-Za-z0-9_]([A-Za-z0-9_-]{0,62}))*\.?$")
+
+
+def is_ip(host):
+    try:
+        ipaddress.ip_address((host or "").strip("[]"))
+        return True
+    except ValueError:
+        return False
 
 
 class UrlError(ValueError):
     pass
 
 
+PASSWORD_NOTE = ("The connection string contained a password. It was removed and not used: the "
+                 "kit asks for it separately, so it never lands in the connection string, the "
+                 "kit's files or its logs.")
+
+
 def parse_url(connector, text):
-    """Returns (fields, notes). fields: host, port, database, params, user."""
+    """Returns (fields, notes). fields: host, port, database, params, user.
+
+    Error messages never quote pieces of the input: a malformed string may
+    still carry a password the parser did not manage to isolate."""
     url = connector["url"]
     text = text.strip()
     notes = []
@@ -36,26 +56,33 @@ def parse_url(connector, text):
         raise UrlError("this does not look like a %s connection string (expected it to start with %s)"
                        % (connector["label"], url["scheme"]))
 
-    # Everything after '?' is parameters. PostgreSQL JDBC also accepts ';'.
+    # Credentials FIRST, split at the last '@'. A password may contain '/',
+    # '?', ';' or '@'; splitting off the path or the query before the
+    # credentials cut a password in two and showed the first half in an error.
+    user = None
+    at = rest.rfind("@")
+    if at >= 0:
+        userinfo, rest = rest[:at], rest[at + 1:]
+        if ":" in userinfo:
+            user, secret_part = userinfo.split(":", 1)
+            state.register_secret(secret_part)
+            state.register_secret(unquote(secret_part))
+            notes.append(("password_stripped", PASSWORD_NOTE))
+        else:
+            user = userinfo
+        user = unquote(user) if user else None
+
+    # Parameters: everything after '?', and pgJDBC's ';key=value' form, which
+    # may follow the database name directly.
     query = ""
     if "?" in rest:
         rest, query = rest.split("?", 1)
     path = ""
     if "/" in rest:
         rest, path = rest.split("/", 1)
-
-    user = None
-    if "@" in rest:
-        userinfo, rest = rest.rsplit("@", 1)
-        if ":" in userinfo:
-            user, _ = userinfo.split(":", 1)
-            notes.append(("password_stripped",
-                          "The pasted string contained a password. It was removed: you are asked "
-                          "for it separately, so it never lands in the connection string, the "
-                          "kit's files or your shell history."))
-        else:
-            user = userinfo
-        user = unquote(user) if user else None
+    if ";" in path:
+        path, extra = path.split(";", 1)
+        query = extra + (";" + query if query else "")
 
     host, port = _split_host_port(rest)
     if not host:
@@ -68,10 +95,9 @@ def parse_url(connector, text):
     for key, value in parse_qsl(query.replace(";", "&"), keep_blank_values=True):
         k = key.lower()
         if k in secret:
-            if k in ("password",) and not any(n[0] == "password_stripped" for n in notes):
-                notes.append(("password_stripped",
-                              "The pasted string contained a password parameter. It was removed "
-                              "and you are asked for the password separately."))
+            state.register_secret(value)
+            if not any(n[0] == "password_stripped" for n in notes):
+                notes.append(("password_stripped", PASSWORD_NOTE))
             continue
         if k == "user":
             user = user or value
@@ -112,9 +138,9 @@ def validate_port(value):
     try:
         p = int(str(value).strip())
     except ValueError:
-        raise UrlError("port must be a number, got %r" % value)
+        raise UrlError("the port must be a number")
     if not 1 <= p <= 65535:
-        raise UrlError("port must be between 1 and 65535, got %d" % p)
+        raise UrlError("the port must be between 1 and 65535")
     return p
 
 
@@ -128,7 +154,7 @@ def validate_host(host):
     except ValueError:
         pass
     if not _HOST_RE.match(host):
-        raise UrlError("%r is not a valid host name" % host)
+        raise UrlError("the host is not a valid host name or IP address")
     return host
 
 

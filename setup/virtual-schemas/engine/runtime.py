@@ -115,7 +115,10 @@ class Runtime:
         _run([self.launcher, "slc", "install", alias, "--no-restart"], timeout=120, check=True)
 
     def java_flavor_dirs(self):
-        return ["/exa/slc/%s" % r["flavor"] for r in self.slc_list() if r["installed"]]
+        # Java only: adapters run there, and the kit has no business changing
+        # how the user's own Python or R scripts behave.
+        return ["/exa/slc/%s" % r["flavor"] for r in self.slc_list()
+                if r["installed"] and "java" in r["aliases"]]
 
     # --- restart ------------------------------------------------------------------
     # Through exakit when the bridge told us where it is: `exakit stop` and
@@ -123,21 +126,45 @@ class Runtime:
     # the port, and the launcher's quirks. The launcher directly is the
     # fallback for a bare engine run.
 
-    def restart(self, wait_ready, timeout=1200):
+    def restart(self, wait_ready, say=None, timeout=1200):
+        """Stop and start the database once. Through exakit when the bridge
+        named it: only the add-on services that were RUNNING are started
+        again afterwards - a bare `exakit start` would also start ones the
+        user had stopped on purpose."""
         t0 = time.time()
+        say = say or (lambda text: None)
         exakit = os.environ.get("EXAKIT_VS_EXAKIT")
-        if exakit:
-            stop, start = [exakit, "stop", "database"], [exakit, "start"]
+        running = []
+        if exakit and Path(exakit).exists():
+            try:
+                st = json.loads(_text(_run([exakit, "status", "--json"], timeout=120).stdout) or "{}")
+                running = sorted(k for k, v in (st.get("services") or {}).items()
+                                 if k != "database" and str(v).startswith("running"))
+            except (ValueError, RuntimeError_):
+                running = []
+            steps = [("Stopping the database", [exakit, "stop", "database"]),
+                     ("Starting the database", [exakit, "start", "database"])]
+            steps += [("Starting %s again" % sid, [exakit, "start", sid]) for sid in running]
         else:
-            stop, start = [self.launcher, "stop"], [self.launcher, "start"]
-        env_note = dict(os.environ, EXAKIT_STOP_ADDONS=os.environ.get("EXAKIT_STOP_ADDONS", "1"))
-        for cmd in (stop, start):
-            p = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env_note)
+            steps = [("Stopping the database", [self.launcher, "stop"]),
+                     ("Starting the database", [self.launcher, "start"])]
+        env = dict(os.environ, EXAKIT_STOP_ADDONS="1")
+        for label, cmd in steps:
+            say(label)
+            try:
+                p = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                raise RuntimeError_("%s failed: %s" % (label.lower(), e), "restart_failed")
             if p.returncode != 0:
-                raise RuntimeError_("%s failed: %s" % (" ".join(cmd[1:]) or cmd[0],
-                                                       _text(p.stderr or p.stdout)[-500:]), "restart_failed")
-        self._info = None
-        wait_ready(deadline=t0 + timeout)
+                detail = _text(p.stderr or p.stdout)[-500:]
+                if "database" in label:
+                    raise RuntimeError_("%s failed: %s" % (label.lower(), detail), "restart_failed")
+                # An add-on service that does not come back is worth a line,
+                # not a failed connect: the database is up.
+                say("%s did not succeed; start it with: exakit start %s" % (label, cmd[-1]))
+            if label == "Starting the database":
+                self._info = None
+                wait_ready(deadline=t0 + timeout)
         return time.time() - t0
 
     # --- the sandbox DNS links (temporary workaround, see module doc) ---------------

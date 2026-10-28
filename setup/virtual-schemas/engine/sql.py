@@ -75,25 +75,44 @@ def create_adapter_script(script, script_class, jvm_options, jars):
     return "\n".join(lines)
 
 
-DNS_PROBE = "SANDBOX_DNS_LINKS"
+NET_PROBE = "SANDBOX_NET"
 
 
-def create_dns_probe():
-    """A Java UDF that answers, from INSIDE the sandbox adapters run in,
-    whether /etc/resolv.conf and /etc/hosts point at the files the UDF
-    framework mounts under /conf (see runtime.py for why they may not)."""
+def create_net_probe():
+    """A Java UDF that answers from INSIDE the sandbox adapters run in:
+
+      SANDBOX_NET('dns', '')    'ok' when /etc/resolv.conf and /etc/hosts have
+                                content (directly, through the kit's links, or
+                                through a fixed image), else 'missing'
+      SANDBOX_NET('resolve', h) h's address as the sandbox sees it: DNS first,
+                                then the hosts file the database mounts at
+                                /conf/hosts; '' when neither knows it
+
+    It tests what the files DO, not what they are, so an upstream fix in any
+    shape reads as 'ok' and the kit stops touching anything."""
     return "\n".join([
-        "CREATE OR REPLACE JAVA SCALAR SCRIPT %s.%s() RETURNS VARCHAR(20) AS" % (
-            ident(ADAPTER_SCHEMA), ident(DNS_PROBE)),
+        "CREATE OR REPLACE JAVA SCALAR SCRIPT %s.%s(mode VARCHAR(10), arg VARCHAR(255)) "
+        "RETURNS VARCHAR(255) AS" % (ident(ADAPTER_SCHEMA), ident(NET_PROBE)),
+        "import java.net.*;",
         "import java.nio.file.*;",
-        "class %s {" % DNS_PROBE,
+        "class %s {" % NET_PROBE,
         "  static String run(ExaMetadata m, ExaIterator ctx) throws Exception {",
-        "    for (String f : new String[] {\"resolv.conf\", \"hosts\"}) {",
-        "      Path p = Paths.get(\"/etc/\" + f);",
-        "      if (!Files.isSymbolicLink(p) || !Files.readSymbolicLink(p).toString().equals(\"/conf/\" + f))",
-        "        return \"missing\";",
+        "    String arg = ctx.getString(\"arg\");",
+        "    if (\"dns\".equals(ctx.getString(\"mode\"))) {",
+        "      for (String f : new String[] {\"/etc/resolv.conf\", \"/etc/hosts\"}) {",
+        "        try { if (Files.size(Paths.get(f)) == 0) return \"missing\"; }",
+        "        catch (Exception e) { return \"missing\"; }",
+        "      }",
+        "      return \"ok\";",
         "    }",
-        "    return \"linked\";",
+        "    try { return InetAddress.getByName(arg).getHostAddress(); } catch (Exception e) { }",
+        "    try {",
+        "      for (String l : Files.readAllLines(Paths.get(\"/conf/hosts\"))) {",
+        "        String[] t = l.trim().split(\"\\\\s+\");",
+        "        for (int i = 1; i < t.length; i++) if (t[i].equalsIgnoreCase(arg)) return t[0];",
+        "      }",
+        "    } catch (Exception e) { }",
+        "    return \"\";",
         "  }",
         "}",
         "/"])
@@ -124,7 +143,8 @@ class Db:
             raise SqlError("the kit's runtime password file is not recorded", "not_installed")
         with open(pwfile, "r", encoding="utf-8") as f:
             pw = f.read().strip()
-        state.register_secret(pw)
+        # Not registered for redaction: it never appears in a statement or a
+        # message, and on a fresh deployment it is a common word.
         try:
             self.c = pyexasol.connect(dsn=self.dsn, user=user, password=pw, encryption=True,
                                       websocket_sslopt={"cert_reqs": ssl.CERT_NONE},
@@ -168,6 +188,10 @@ _KINDS = [
     ("slc_missing", r"unsupported script language|script language container"),
     ("tls_policy", r"security policy has prevented|SocketPermission"),
     ("dns", r"UnknownHostException|Temporary failure in name resolution|Name or service not known"),
+    # Before tls: "SSL ... Connection reset" is the network dropping, and
+    # reading it as a TLS failure would invite a needless TLS downgrade.
+    ("network", r"Connection (?:to \S+ )?refused|Connection reset|No route to host|"
+                r"Network is unreachable|connect timed out"),
     ("tls", r"SSL|PKIX|trustAnchors|certificate|does not support SSL|handshake"),
     ("auth", r"password authentication failed|authentication failed|Access denied for user|"
              r"Login failed|ORA-01017|invalid username|role \S+ does not exist"),

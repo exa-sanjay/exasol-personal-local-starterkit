@@ -31,7 +31,12 @@ KIT_BUCKET = "exakit-vs"
 
 
 class ArtifactError(Exception):
-    pass
+    """kind: 'checksum' (a file did not match its pin - do not retry, report
+    it), 'download' (network or publisher trouble - retry later)."""
+
+    def __init__(self, message, kind="download"):
+        super().__init__(message)
+        self.kind = kind
 
 
 def sha256_file(path):
@@ -50,14 +55,22 @@ def _get(url, timeout=120):
 
 
 def _upstream_digest(spec):
-    """(algorithm, hex) the publisher states for this file, or None when the
-    publisher states none (then the pin alone decides)."""
+    """(algorithm, hex) the publisher states for this file, or None when it
+    states none or cannot be reached - then the pin alone decides. The pin is
+    the security check; this second opinion only catches a pin that was
+    copied wrong, so its absence must not stop an install."""
     for key, algo in (("sha256_url", "sha256"), ("sha1_url", "sha1")):
         url = spec.get(key)
         if not url:
             continue
-        with _get(url, 60) as r:
-            text = r.read().decode("utf-8", "replace").strip()
+        try:
+            with _get(url, 60) as r:
+                text = r.read().decode("utf-8", "replace").strip()
+        except Exception as e:
+            state.log("WARN", "publisher checksum for %s unavailable: %s" % (spec["file"], e))
+            return None
+        if not text:
+            return None
         # sha256sum format ("<hex>  <file>") or a bare hex digest.
         return algo, text.split()[0].lower()
     return None
@@ -80,14 +93,14 @@ def fetch(spec, ui=None):
         got = sha256_file(tmp)
         if got != want:
             raise ArtifactError("%s failed verification: SHA-256 %s does not match the pinned %s. "
-                                "Nothing was installed." % (spec["file"], got, want))
+                                "Nothing was installed." % (spec["file"], got, want), "checksum")
         upstream = _upstream_digest(spec)
         if upstream:
             algo, stated = upstream
             actual = got if algo == "sha256" else _digest(tmp, algo)
             if actual != stated:
                 raise ArtifactError("%s does not match the %s its publisher states (%s). "
-                                    "Nothing was installed." % (spec["file"], algo, stated))
+                                    "Nothing was installed." % (spec["file"], algo, stated), "checksum")
         os.replace(tmp, target)
     except ArtifactError:
         raise
@@ -117,8 +130,23 @@ def _copy_atomic(src, dest):
     return True
 
 
-def bucket_rel(connector):
-    return Path(KIT_BUCKET) / connector["id"] / connector["adapter"]["version"]
+def bucket_rel(connector, version=None):
+    return Path(KIT_BUCKET) / connector["id"] / (version or connector["adapter"]["version"])
+
+
+def describe(connector):
+    """What a source built from this connector right now records about its
+    artifacts - so it can later be checked and removed by what it USES, not
+    by whatever the connector pins after a kit update."""
+    return {
+        "adapter_key": "%s/%s" % (connector["id"], connector["adapter"]["version"]),
+        "adapter_version": connector["adapter"]["version"],
+        "adapter_file": connector["adapter"]["file"],
+        "bucket": bucket_rel(connector).as_posix(),
+        "driver_name": connector["driver"]["settings"]["DRIVERNAME"],
+        "driver_file": connector["driver"]["file"],
+        "driver_version": connector["driver"]["version"],
+    }
 
 
 def stage_adapter(exa_root, connector, adapter_path, driver_path):
@@ -240,11 +268,11 @@ def remove_bucket_files(exa_root, rel):
     return removed
 
 
-def remove_driver(exa_root, driver):
-    d = driver_dir(exa_root, driver)
+def remove_driver(exa_root, driver_name, driver_file):
+    d = Path(exa_root) / "jdbc" / driver_name
     removed = []
     if d.is_dir():
-        for name in (driver["file"], "settings.cfg"):
+        for name in (driver_file, "settings.cfg"):
             p = d / name
             if p.exists():
                 p.unlink()

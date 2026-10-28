@@ -72,6 +72,9 @@ virtual_schemas_run() {
 # with no sources does nothing at all.
 virtual_schemas_post_start() {
     ls "$EXAKIT_HOME/sources"/*/config.json >/dev/null 2>&1 || return 0
-    virtual_schemas_run hook post-start --json >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || true
+    # A SUBSHELL, not just `|| true`: virtual_schemas_run exits (reject, a
+    # missing venv), and an exit in this shell would end `exakit start`
+    # before the add-on services it still has to start.
+    ( virtual_schemas_run hook post-start --json ) >> "${EXAKIT_LOG_FILE:-/dev/null}" 2>&1 || true
     return 0
 }

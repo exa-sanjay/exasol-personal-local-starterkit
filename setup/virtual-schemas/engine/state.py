@@ -72,6 +72,10 @@ class StateError(Exception):
     pass
 
 
+class Busy(StateError):
+    """Another connect/source command holds the lock."""
+
+
 def read_manifest():
     m = read_json(manifest_path())
     if m is None:
@@ -86,15 +90,22 @@ class NotInstalled(Exception):
 # --- per-deployment lock ------------------------------------------------------
 # Two connects at once would race on the registry and on the jdbc/ folder.
 # A lock file with our pid; a stale one (dead pid, or older than an hour) is
-# taken over rather than wedging every later run.
+# taken over rather than wedging every later run. The wait is long because
+# the holder may be inside the one database restart, which takes minutes the
+# first time.
+
+LOCK_WAIT = int(os.environ.get("EXAKIT_VS_LOCK_WAIT", "900"))
+
 
 class Lock:
-    def __init__(self, path=None):
+    def __init__(self, path=None, on_wait=None):
         self.path = Path(path or (sources_dir() / ".lock"))
+        self.on_wait = on_wait
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.time() + 30
+        deadline = time.time() + LOCK_WAIT
+        told = False
         while True:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -109,8 +120,10 @@ class Lock:
                         pass
                     continue
                 if time.time() > deadline:
-                    raise StateError(
-                        "another exakit connect/source command is running (lock: %s)" % self.path)
+                    raise Busy("another exakit connect or source command is still running")
+                if not told and self.on_wait:
+                    self.on_wait()
+                    told = True
                 time.sleep(0.5)
 
     def _stale(self):
@@ -159,14 +172,19 @@ _SECRETS = []
 
 
 def register_secret(value):
-    if value and len(value) >= 3 and value not in _SECRETS:
+    """A source password (or one found in a pasted URL). Only these are
+    redacted by value; the kit's own database password is never registered,
+    because it is a common word on a fresh deployment and blanking it out of
+    every path and package name gave it away instead of hiding it."""
+    if value and len(value) >= 4 and value not in _SECRETS:
         _SECRETS.append(value)
 
 
 _PATTERNS = [
     (re.compile(r"(IDENTIFIED\s+BY\s+)'(?:[^']|'')*'", re.I), r"\1'***'"),
-    (re.compile(r"([?&;](?:password|pwd|sslpassword|token)=)[^&;\s']*", re.I), r"\1***"),
-    (re.compile(r"(://[^/:@\s]+:)[^@/\s]+@"), r"\1***@"),
+    (re.compile(r"((?:[?&;]|%3B|%26|%3F)(?:password|pwd|sslpassword|token)(?:=|%3D))(?:(?!%26|%3B)[^&;\s'?])*",
+                re.I), r"\1***"),
+    (re.compile(r"(://[^/@\s]+:)[^@\s]+@"), r"\1***@"),
 ]
 
 
@@ -177,27 +195,43 @@ def redact(text):
     for pat, rep in _PATTERNS:
         text = pat.sub(rep, text)
     for s in _SECRETS:
-        text = text.replace(s, "***")
+        # Whole occurrences only, so a secret that happens to be an ordinary
+        # word does not turn every message containing that word into a riddle.
+        text = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(s), "***", text)
     return text
 
 
+LOG_KEEP_DAYS = 14
+
+
 class Log:
+    """One file per day (virtual-schemas-YYYYMMDD.log), each line tagged with
+    the process id, older files pruned. A file per invocation filled the logs
+    folder with hundreds of files from status-like commands."""
+
     def __init__(self):
         d = kit_home() / "logs"
         try:
             d.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            self.path = d / ("virtual-schemas-%s.log" % stamp)
+            self.path = d / ("virtual-schemas-%s.log" % datetime.date.today().strftime("%Y%m%d"))
             self._f = open(self.path, "a", encoding="utf-8", newline="\n")
         except OSError:
             self.path, self._f = None, None
+            return
+        cutoff = time.time() - LOG_KEEP_DAYS * 86400
+        for old in d.glob("virtual-schemas-*.log"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
 
     def write(self, level, text):
         if not self._f:
             return
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for line in redact(text).splitlines() or [""]:
-            self._f.write("%s %-5s %s\n" % (ts, level, line))
+            self._f.write("%s [%d] %-5s %s\n" % (ts, os.getpid(), level, line))
         self._f.flush()
 
 

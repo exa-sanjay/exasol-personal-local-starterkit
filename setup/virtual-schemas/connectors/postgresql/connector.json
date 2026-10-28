@@ -71,9 +71,13 @@
     },
     "from_url": {"verify-full": "verify", "verify-ca": "verify", "require": "encrypt", "prefer": "encrypt", "allow": "encrypt", "disable": "none"}
   },
-  "check": {"statement": "SELECT 1"},
+  "check": {
+    "statement": "SELECT 1",
+    "schema": "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = {schema}) THEN 'missing' WHEN has_schema_privilege({schema}, 'USAGE') THEN 'ok' ELSE 'denied' END"
+  },
   "notes": [
     "Names keep their source spelling (PRESERVE_ORIGINAL_CASE): query them in double quotes, e.g. \"orders\".",
-    "NUMERIC columns arrive as VARCHAR (they can exceed Exasol's DECIMAL range); TIMESTAMPTZ arrives as TIMESTAMP."
+    "NUMERIC columns arrive as VARCHAR (they can exceed Exasol's DECIMAL range); TIMESTAMPTZ arrives as TIMESTAMP; JSON, UUID and INTERVAL as VARCHAR.",
+    "Array columns are left out of the virtual schema, and BYTEA columns read as the text 'bytea NOT SUPPORTED'."
   ]
 }

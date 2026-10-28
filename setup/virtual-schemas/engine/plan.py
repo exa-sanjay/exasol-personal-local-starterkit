@@ -157,10 +157,17 @@ def vs_properties(connector, conn_name, inputs):
     return props
 
 
+def restart_needed(facts):
+    """Java recorded but not active (a run interrupted between the install and
+    the restart) needs the restart just as much as Java never installed."""
+    return not facts.get("java_installed") or facts.get("java_active") is False
+
+
 def build_plan(connector, inputs, facts):
-    """facts: java_installed, adapter_cached, driver_cached, adapter_staged,
-    driver_registered, dns_links (linked|missing|unavailable),
-    connection_exists, connection_owned, schema_exists, schema_owned."""
+    """facts: java_installed, java_active (True|False|None=unknown),
+    adapter_cached, driver_cached, adapter_staged, driver_registered,
+    dns (ok|missing|unknown|inactive), connection_exists, connection_owned,
+    schema_exists, schema_owned, adapter_schema_foreign, script_exists."""
     names = sql.object_names(inputs["name"])
     script = sql.adapter_script_name(connector["id"], connector["adapter"]["version"])
     steps = []
@@ -168,12 +175,16 @@ def build_plan(connector, inputs, facts):
     def add(key, text, needed=True, consent=False):
         steps.append({"step": key, "action": text, "needed": bool(needed), "consent": consent})
 
+    # Every refusal comes before anything is staged or changed.
     if facts.get("connection_exists") and not facts.get("connection_owned"):
         raise PlanError("a connection named %s already exists and was not created by the kit; "
                         "pick another name" % names["connection"])
     if facts.get("schema_exists") and not facts.get("schema_owned"):
         raise PlanError("a schema named %s already exists and was not created by the kit; "
                         "pick another name" % names["schema"])
+    if facts.get("adapter_schema_foreign"):
+        raise PlanError("a schema named %s exists and was not created by the kit; the kit will not "
+                        "put its adapter scripts there" % sql.ADAPTER_SCHEMA)
 
     add("java", "Install the Java runtime in the database (exasol slc install java)",
         not facts.get("java_installed"), consent=True)
@@ -186,15 +197,36 @@ def build_plan(connector, inputs, facts):
     add("driver", "Register the JDBC driver %s" % connector["driver"]["settings"]["DRIVERNAME"],
         not facts.get("driver_registered"))
     add("restart", "Restart the database once, to activate the Java runtime",
-        not facts.get("java_installed"), consent=True)
+        restart_needed(facts), consent=True)
     add("dns", "Link name resolution into the Java sandbox (temporary workaround)",
-        facts.get("dns_links") != "linked")
+        facts.get("dns") != "ok")
     add("connection", "Create connection %s (password stored only there)" % names["connection"])
-    add("probe", "Test the source from inside the database")
+    add("probe", "Test the source and its schema from inside the database")
     add("script", "Create adapter script %s.%s" % (sql.ADAPTER_SCHEMA, script),
         not facts.get("script_exists"))
     add("schema", "%s virtual schema %s" % (
         "Refresh" if facts.get("schema_exists") else "Create", names["schema"]))
     add("verify", "Read real rows through the virtual schema")
     return {"source": inputs["name"], "connector": connector["id"], "objects": dict(names, script="%s.%s" % (
-        sql.ADAPTER_SCHEMA, script)), "restart_needed": not facts.get("java_installed"), "steps": steps}
+        sql.ADAPTER_SCHEMA, script)), "restart_needed": restart_needed(facts), "steps": steps}
+
+
+# The fields that make up a source's connection. A re-run of connect that
+# changes any of them must rebuild the CONNECTION, which needs the password.
+CONNECTION_FIELDS = ("host", "port", "database", "user", "params", "tls")
+
+
+def changed_fields(saved, inputs, level):
+    if not saved:
+        return list(CONNECTION_FIELDS)
+    want = dict(inputs, tls=level)
+    out = []
+    for k in CONNECTION_FIELDS:
+        a, b = saved.get(k), want.get(k)
+        if k == "params":
+            a, b = a or {}, b or {}
+        if k == "port":
+            a, b = int(a or 0), int(b or 0)
+        if a != b:
+            out.append(k)
+    return out

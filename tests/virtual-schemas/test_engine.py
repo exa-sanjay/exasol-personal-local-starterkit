@@ -3,17 +3,20 @@
     python -m unittest discover -s tests/virtual-schemas -p "test_*.py"
 """
 
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "setup" / "virtual-schemas"))
 
-from engine import artifacts, net, plan, sql, state  # noqa: E402
+from engine import artifacts, cli, lifecycle, net, plan, sql, state, ui  # noqa: E402
 
 PG = plan.load_connectors()["postgresql"]
 
@@ -34,8 +37,35 @@ class UrlParsing(unittest.TestCase):
     def test_cloud_uri_strips_password(self):
         f, notes = net.parse_url(PG, "postgres://reader:s3cr%40t@ep-x.neon.tech/app?sslmode=require")
         self.assertEqual(f["user"], "reader")
+        self.assertEqual(f["host"], "ep-x.neon.tech")
         self.assertNotIn("s3cr", json.dumps(f))
         self.assertEqual([n[0] for n in notes], ["password_stripped"])
+
+    def test_password_with_url_delimiters_never_leaks(self):
+        # A password containing '/', '?', ';' or '@' used to be cut in two,
+        # with the first half shown in a "port must be a number" error.
+        for pw in ("Se/cretZZQ", "p?xZZQ", "a;b@cZZQ"):
+            with self.subTest(pw=pw):
+                f, notes = net.parse_url(PG, "postgres://spike:%s@localhost:5432/spike" % pw)
+                self.assertEqual((f["host"], f["port"], f["database"], f["user"]),
+                                 ("localhost", 5432, "spike", "spike"))
+                self.assertNotIn("ZZQ", json.dumps(f))
+                self.assertEqual(state.redact("x %s y" % pw), "x *** y")
+
+    def test_semicolon_parameter_form(self):
+        # pgJDBC's ';key=value' form after the database name used to stay in
+        # the database name - and the password with it, in the stored URL.
+        f, notes = net.parse_url(PG, "jdbc:postgresql://localhost:5432/spike;user=spike;password=SemiSecretZZ")
+        self.assertEqual(f["database"], "spike")
+        self.assertEqual(f["user"], "spike")
+        self.assertNotIn("SemiSecretZZ", json.dumps(f))
+        self.assertIn("password_stripped", [n[0] for n in notes])
+
+    def test_errors_never_quote_input(self):
+        for bad in ("jdbc:postgresql://h:ZZQ1/db", "jdbc:postgresql://h:99999/db"):
+            with self.assertRaises(net.UrlError) as cm:
+                net.parse_url(PG, bad)
+            self.assertNotIn("ZZQ1", str(cm.exception))
 
     def test_password_parameter_stripped(self):
         f, notes = net.parse_url(PG, "jdbc:postgresql://h/db?user=u&password=hunter2&sslmode=disable")
@@ -91,6 +121,9 @@ class HostClass(unittest.TestCase):
             with self.assertRaises(net.UrlError):
                 net.validate_host(bad)
 
+    def test_underscore_host_allowed(self):
+        self.assertEqual(net.validate_host("my_pg_container"), "my_pg_container")
+
 
 class Quoting(unittest.TestCase):
     def test_names(self):
@@ -121,6 +154,11 @@ class Quoting(unittest.TestCase):
     def test_probe_names_driver(self):
         self.assertIn("DRIVER = 'EXAKIT_POSTGRESQL'", sql.import_probe("C", "EXAKIT_POSTGRESQL"))
 
+    def test_schema_probe_quotes_twice(self):
+        stmt = PG["check"]["schema"].format(schema=sql.literal("it's"))
+        wrapped = sql.import_probe("C", "D", stmt)
+        self.assertIn("nspname = ''it''''s''", wrapped)
+
 
 class Redaction(unittest.TestCase):
     def test_patterns(self):
@@ -128,9 +166,25 @@ class Redaction(unittest.TestCase):
         self.assertNotIn("hunter2", state.redact("jdbc:postgresql://h/db?user=u&password=hunter2"))
         self.assertNotIn("hunter2", state.redact("postgres://u:hunter2@h/db"))
 
+    def test_url_encoded_password_param(self):
+        self.assertNotIn("TopSecret", state.redact("spike%3Bpassword%3DTopSecret?sslmode=require"))
+
     def test_registered_secret(self):
         state.register_secret("Zebra-Unique-42")
         self.assertEqual(state.redact("auth failed for Zebra-Unique-42"), "auth failed for ***")
+
+    def test_redaction_is_whole_word(self):
+        # A secret that is an ordinary word blanked out of every path and
+        # package name made it easy to guess instead of hiding it.
+        state.register_secret("bananas")
+        self.assertEqual(state.redact("password was bananas"), "password was ***")
+        self.assertEqual(state.redact("com.bananasoft.adapter"), "com.bananasoft.adapter")
+
+    def test_kit_password_is_not_registered(self):
+        # sql.Db must not register the kit's own database password.
+        src = (ROOT / "setup" / "virtual-schemas" / "engine" / "sql.py").read_text(encoding="utf-8")
+        body = src[src.index("class Db"):src.index("def run(")]
+        self.assertNotIn("register_secret(", body)
 
 
 class Classification(unittest.TestCase):
@@ -143,6 +197,7 @@ class Classification(unittest.TestCase):
         "FATAL: database \"nope\" does not exist": "database_missing",
         "E-VSPG-6: Table 'Orders' cannot be used in virtual schema.": "mixed_case",
         "Connection to localhost:5432 refused.": "network",
+        "SSL error: Connection reset by peer": "network",
         "unsupported script language connection scheme": "slc_missing",
     }
 
@@ -159,6 +214,14 @@ class Classification(unittest.TestCase):
         m = ("VM error: F-UDF-CL-LIB-1126: ...\ncom.exasol.adapter.jdbc.RemoteMetadataReaderException: "
              "E-VSPG-3: Unable to create. Caused by: 'The connection attempt failed.'\nat x")
         self.assertEqual(sql.short(m), "The connection attempt failed.")
+
+    def test_remedies(self):
+        cfg = {"name": "SALES", "connector": "postgresql", "host": "h", "port": 5432}
+        self.assertEqual(lifecycle.explain("auth", cfg, "", first_time=False)[1], "exakit source reauth sales")
+        # Nothing is kept after a failed FIRST connect, so reauth would be a dead end.
+        self.assertEqual(lifecycle.explain("auth", cfg, "", first_time=True)[1],
+                         "exakit connect postgresql --name sales")
+        self.assertEqual(lifecycle.explain("tls", cfg, "")[1], "exakit connect postgresql --name sales --tls none")
 
 
 class SettingsCfg(unittest.TestCase):
@@ -197,6 +260,39 @@ class Tls(unittest.TestCase):
                          {"ApplicationName": "a", "sslmode": "require"})
 
 
+class Changes(unittest.TestCase):
+    SAVED = {"host": "h", "port": 5432, "database": "d", "user": "u", "params": {}, "tls": "encrypt"}
+
+    def test_no_change(self):
+        self.assertEqual(plan.changed_fields(self.SAVED, dict(self.SAVED, port="5432"), "encrypt"), [])
+
+    def test_changes_detected(self):
+        # A re-run with a new port or TLS level used to report ready while the
+        # old connection stayed in place.
+        self.assertEqual(plan.changed_fields(self.SAVED, dict(self.SAVED, port=5433), "encrypt"), ["port"])
+        self.assertEqual(plan.changed_fields(self.SAVED, self.SAVED, "none"), ["tls"])
+        self.assertEqual(len(plan.changed_fields(None, self.SAVED, "encrypt")), len(plan.CONNECTION_FIELDS))
+
+    def test_schema_is_not_a_connection_change(self):
+        self.assertEqual(plan.changed_fields(self.SAVED, dict(self.SAVED, schema="other"), "encrypt"), [])
+
+    def test_restart_needed(self):
+        self.assertTrue(plan.restart_needed({"java_installed": False}))
+        self.assertTrue(plan.restart_needed({"java_installed": True, "java_active": False}))
+        self.assertFalse(plan.restart_needed({"java_installed": True, "java_active": None}))
+        self.assertFalse(plan.restart_needed({"java_installed": True, "java_active": True}))
+
+
+class PasswordFile(unittest.TestCase):
+    def test_encodings(self):
+        word = "päss"
+        for data in (word.encode("utf-8"), b"\xef\xbb\xbf" + word.encode("utf-8"),
+                     ("﻿" + word).encode("utf-16-le"), ("﻿" + word).encode("utf-16-be")):
+            self.assertEqual(lifecycle._decode_secret_bytes(data, "f"), word)
+        with self.assertRaises(lifecycle.Fail):
+            lifecycle._decode_secret_bytes(b"\xc3\x28", "f")
+
+
 class Registry(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -217,20 +313,42 @@ class Registry(unittest.TestCase):
         state.write_json(state.registry_path(), reg)
         self.assertEqual(artifacts.load_registry()["adapters"]["postgresql/4.1.0"]["refs"], [])
 
+    def _cfg(self, name, version):
+        art = dict(artifacts.describe(PG), adapter_key="postgresql/%s" % version, adapter_version=version,
+                   bucket="exakit-vs/postgresql/%s" % version)
+        return {"name": name, "connector": "postgresql", "artifacts": art,
+                "objects": {"schema": "VS_" + name, "connection": "EXAKIT_SRC_" + name,
+                            "script": "EXAKIT_VS.POSTGRESQL_%s" % version.replace(".", "_")}}
+
     def test_removal_plan_keeps_shared(self):
         reg = artifacts.load_registry()
         for src in ("SALES", "HR"):
             artifacts.add_ref(reg, "adapters", "postgresql/4.1.0", src,
                               {"bucket": "exakit-vs/postgresql/4.1.0", "script": "EXAKIT_VS.POSTGRESQL_4_1_0"})
             artifacts.add_ref(reg, "drivers", "EXAKIT_POSTGRESQL", src, {"connector": "postgresql"})
-        cfg = {"name": "SALES", "objects": {"schema": "VS_SALES", "connection": "EXAKIT_SRC_SALES"}}
-        kinds = [k for k, _ in __import__("engine.lifecycle", fromlist=["x"]).removal_plan(cfg, reg, PG)]
-        self.assertEqual(kinds, ["virtual_schema", "connection", "source_record"])
+        cfg = self._cfg("SALES", "4.1.0")
+        self.assertEqual([k for k, _ in lifecycle.removal_plan(cfg, reg)],
+                         ["virtual_schema", "connection", "source_record"])
         artifacts.drop_ref(reg, "adapters", "postgresql/4.1.0", "HR")
         artifacts.drop_ref(reg, "drivers", "EXAKIT_POSTGRESQL", "HR")
-        kinds = [k for k, _ in __import__("engine.lifecycle", fromlist=["x"]).removal_plan(cfg, reg, PG)]
-        self.assertEqual(kinds, ["virtual_schema", "connection", "adapter_script", "bucket_folder",
-                                 "driver_registration", "source_record"])
+        self.assertEqual([k for k, _ in lifecycle.removal_plan(cfg, reg)],
+                         ["virtual_schema", "connection", "adapter_script", "bucket_folder",
+                          "driver_registration", "source_record"])
+
+    def test_removal_uses_recorded_version_not_current(self):
+        # After a kit update pins 4.2.0, removing a 4.1.0 source must touch
+        # 4.1.0 and nothing the 4.2.0 sources use.
+        reg = artifacts.load_registry()
+        artifacts.add_ref(reg, "adapters", "postgresql/4.1.0", "OLD",
+                          {"bucket": "exakit-vs/postgresql/4.1.0", "script": "EXAKIT_VS.POSTGRESQL_4_1_0"})
+        artifacts.add_ref(reg, "adapters", "postgresql/4.2.0", "NEW",
+                          {"bucket": "exakit-vs/postgresql/4.2.0", "script": "EXAKIT_VS.POSTGRESQL_4_2_0"})
+        artifacts.add_ref(reg, "drivers", "EXAKIT_POSTGRESQL", "OLD", {})
+        artifacts.add_ref(reg, "drivers", "EXAKIT_POSTGRESQL", "NEW", {})
+        items = dict(lifecycle.removal_plan(self._cfg("OLD", "4.1.0"), reg))
+        self.assertEqual(items["adapter_script"], "EXAKIT_VS.POSTGRESQL_4_1_0")
+        self.assertEqual(items["bucket_folder"], "exakit-vs/postgresql/4.1.0")
+        self.assertNotIn("driver_registration", items)
 
     def test_bucket_delete_is_scoped(self):
         with self.assertRaises(artifacts.ArtifactError):
@@ -259,19 +377,24 @@ class Plan(unittest.TestCase):
         self.assertEqual(p["objects"]["script"], "EXAKIT_VS.POSTGRESQL_4_1_0")
 
     def test_second_source_needs_no_restart(self):
-        facts = {"java_installed": True, "adapter_cached": True, "driver_cached": True,
-                 "adapter_staged": True, "driver_registered": True, "dns_links": "linked",
-                 "script_exists": True}
+        facts = {"java_installed": True, "java_active": True, "adapter_cached": True,
+                 "driver_cached": True, "adapter_staged": True, "driver_registered": True,
+                 "dns": "ok", "script_exists": True}
         p = plan.build_plan(PG, self.INPUTS, facts)
         self.assertFalse(p["restart_needed"])
         self.assertEqual([s["step"] for s in p["steps"] if s["needed"]],
                          ["connection", "probe", "schema", "verify"])
 
+    def test_installed_but_inactive_java_restarts(self):
+        p = plan.build_plan(PG, self.INPUTS, {"java_installed": True, "java_active": False})
+        self.assertTrue(p["restart_needed"])
+
     def test_refuses_foreign_objects(self):
-        with self.assertRaises(plan.PlanError):
-            plan.build_plan(PG, self.INPUTS, {"connection_exists": True, "connection_owned": False})
-        with self.assertRaises(plan.PlanError):
-            plan.build_plan(PG, self.INPUTS, {"schema_exists": True, "schema_owned": False})
+        for facts in ({"connection_exists": True, "connection_owned": False},
+                      {"schema_exists": True, "schema_owned": False},
+                      {"adapter_schema_foreign": True}):
+            with self.assertRaises(plan.PlanError):
+                plan.build_plan(PG, self.INPUTS, facts)
 
     def test_properties(self):
         props = plan.vs_properties(PG, "EXAKIT_SRC_SALES", self.INPUTS)
@@ -305,17 +428,42 @@ class Connectors(unittest.TestCase):
                 self.assertIn(c["tls"]["default"], c["tls"]["levels"])
 
 
+class UiTwin(unittest.TestCase):
+    def test_glyphs_match_ui_sh(self):
+        """ui.py is a third twin of ui.sh / ui.ps1: the fancy glyphs are the same."""
+        text = (ROOT / "setup" / "lib" / "ui.sh").read_text(encoding="utf-8")
+        start = text.index('if [ "$UI_FANCY" = 1 ]; then')
+        fancy = text[start:text.index("\nelse\n", start)]
+        src = (ROOT / "setup" / "virtual-schemas" / "engine" / "ui.py").read_text(encoding="utf-8")
+        for name in ("TICK", "CROSS", "BULLET", "ARROW", "HR", "TL", "TR", "BL", "BR", "VB"):
+            m = re.search(r"UI_%s='([^']*)'" % name, fancy)
+            self.assertIsNotNone(m, name)
+            glyph = m.group(1)
+            self.assertTrue(glyph in src or "\\u%04x" % ord(glyph) in src, "%s %r is not in ui.py" % (name, glyph))
+
+
 class Cli(unittest.TestCase):
-    def test_unknown_option_is_json_refusal(self):
-        import io
-        from contextlib import redirect_stdout
-        from engine import cli
+    def _run(self, argv):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = cli.main(["connect", "--password", "x", "--json"])
+            rc = cli.main(argv)
+        return rc, json.loads(buf.getvalue())
+
+    def test_password_option_refused_with_reason(self):
+        rc, obj = self._run(["connect", "--password", "x", "--json"])
         self.assertEqual(rc, 2)
-        obj = json.loads(buf.getvalue())
         self.assertEqual((obj["ok"], obj["rejected"]), (False, True))
+        self.assertIn("deliberately", obj["error"])
+
+    def test_unknown_option(self):
+        rc, obj = self._run(["connect", "--bogus", "--json"])
+        self.assertEqual((rc, obj["rejected"]), (2, True))
+
+    def test_top_level_json(self):
+        for argv in (["--json"], ["source", "--json"]):
+            rc, obj = self._run(argv)
+            self.assertEqual(rc, 2)
+            self.assertFalse(obj["ok"])
 
 
 if __name__ == "__main__":

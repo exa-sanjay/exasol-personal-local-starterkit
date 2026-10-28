@@ -975,7 +975,6 @@ _start_database() {
     return 0
 }
 
-# cmd_start [service] — everything the kit runs, or one named service.
 # _exakit_addons_post_start — every database start ends here. An add-on that
 # has to redo something on a fresh database container defines <id>_post_start
 # (virtual-schemas re-links name resolution into the Java sandbox); generic, so
@@ -1005,6 +1004,7 @@ cmd_source() {
     virtual_schemas_run source "$@"
 }
 
+# cmd_start [service] — everything the kit runs, or one named service.
 cmd_start() {
     _service_scope start "$@"
     _require_install

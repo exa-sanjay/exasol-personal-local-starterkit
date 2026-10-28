@@ -3,8 +3,8 @@
 A third close twin of setup/lib/ui.sh and ui.ps1, kept deliberately small: the
 palette, the glyphs and the four indents the kit's screens are built from
 (step at 2, action at 4, outcome at 6, panel lines at 2). When a glyph or a
-colour changes there, change it here too - tests/virtual-schemas/test_ui.py
-compares the glyph bytes against ui.sh.
+colour changes there, change it here too - UiTwin in
+tests/virtual-schemas/test_engine.py compares the glyphs against ui.sh.
 
 In --json mode nothing here writes to stdout: the one JSON object is the whole
 answer there, so human lines go to stderr (or nowhere, when quiet).
@@ -60,10 +60,10 @@ class UI:
             except (AttributeError, ValueError):
                 pass
 
-    def _p(self, text):
+    def _p(self, text, err=False):
         if self.quiet:
             return
-        print(text, file=self.out, flush=True)
+        print(text, file=sys.stderr if err else self.out, flush=True)
 
     # The four lines every kit screen is made of.
     def step(self, text):
@@ -75,17 +75,19 @@ class UI:
     def ok(self, text):
         self._p("      %s%s%s %s" % (self.OK, self.TICK, self.RESET, text))
 
+    # Warnings and errors go to stderr, as common.sh's warn/error do, so a
+    # caller capturing stdout gets the result without the noise.
     def warn(self, text):
-        self._p("      %s!%s %s" % (self.WARN, self.RESET, text))
+        self._p("      %s!%s %s" % (self.WARN, self.RESET, text), err=True)
 
     def error(self, text):
-        self._p("      %s%s%s %s" % (self.ERR, self.CROSS, self.RESET, text))
+        self._p("      %s%s%s %s" % (self.ERR, self.CROSS, self.RESET, text), err=True)
 
     def done(self, text):
         self._p("  %s%s%s %s%s%s" % (self.OK, self.TICK, self.RESET, self.BOLD, text, self.RESET))
 
     def fail(self, text):
-        self._p("\n  %s%s %s%s%s" % (self.ERR, self.CROSS, self.BOLD, text, self.RESET))
+        self._p("\n  %s%s %s%s%s" % (self.ERR, self.CROSS, self.BOLD, text, self.RESET), err=True)
 
     def blank(self):
         self._p("")
@@ -163,6 +165,8 @@ class UI:
 
 
 def interactive():
+    """A question may be asked. Never under --json (Ctx sets the variable):
+    a JSON caller is a program, and a prompt it cannot see would hang it."""
     try:
         return sys.stdin.isatty() and os.environ.get("EXAKIT_VS_NONINTERACTIVE", "0") != "1"
     except (AttributeError, ValueError):

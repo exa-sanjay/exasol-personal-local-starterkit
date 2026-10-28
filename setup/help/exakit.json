@@ -199,7 +199,8 @@
         "EXAKIT_VS_SOURCE, EXAKIT_VS_NAME, EXAKIT_VS_JDBC_URL (or EXAKIT_VS_HOST, EXAKIT_VS_PORT, EXAKIT_VS_DATABASE), EXAKIT_VS_USER, EXAKIT_VS_SCHEMA answer the questions",
         "EXAKIT_VS_PASSWORD_FILE=<path> supplies the password; there is no --password option",
         "EXAKIT_VS_TLS=verify|encrypt|none chooses the TLS level for a run with no terminal",
-        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (or --yes) consents to the one restart the Java runtime needs"
+        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (or --yes) consents to the one restart the Java runtime needs",
+        "EXAKIT_VS_DNS_WORKAROUND=0 stops the kit linking name resolution into the database's Java runtime after each start (a temporary workaround for Exasol Personal); sources given by host name are then reached by their IP address"
       ],
       "exit_codes": "0 ready · 1 the source could not be reached or read (remedy names the fix) · 2 bad input · 3 database not running · 4 not installed · 5 the restart was not confirmed",
       "examples": [
@@ -212,7 +213,7 @@
       "command": "source",
       "options": "list | show <name> | check <name> | reauth <name> | refresh <name> | remove <name> [--dry-run] [--yes] [--json]",
       "summary": "Manage connected sources.",
-      "description": "list shows every connected source with its TLS level and last check. show prints one source's details. check repairs what a restart can undo (staged files, the driver registration, name resolution in the Java sandbox), then proves the source answers and its rows can be read. reauth replaces the user and password stored in the CONNECTION. refresh re-reads the source's tables and columns. remove drops the virtual schema and connection and deletes the adapter, driver and files no other source still uses; --dry-run lists what would go, and without a terminal it needs --yes.",
+      "description": "list shows every connected source with its TLS level and last check. show prints one source's details. check repairs what a restart can undo (staged files, the driver registration, name resolution in the Java sandbox), then proves the source answers and its rows can be read. reauth replaces the user and password stored in the CONNECTION. refresh re-reads the source's tables and columns. remove drops the virtual schema and connection and deletes the adapter, driver and files no other source still uses - anything someone else still depends on (a virtual schema of their own on the kit's adapter, a table in EXAKIT_VS) is kept and named, never forced; --dry-run lists what would go, and without a terminal it needs --yes.",
       "exit_codes": "0 ok · 1 the check or change failed · 2 unknown source or bad input · 3 database not running · 5 removal not confirmed",
       "examples": [
         "exakit source list",

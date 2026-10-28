@@ -27,10 +27,11 @@ class _BadInput(Exception):
 
 
 def _parser():
-    p = _Parser(prog="exakit", add_help=True)
-    sub = p.add_subparsers(dest="command")
+    p = _Parser(prog="exakit", add_help=True, allow_abbrev=False)
+    p.add_argument("--json", "-j", action="store_true")
+    sub = p.add_subparsers(dest="command", parser_class=_Parser)
 
-    c = sub.add_parser("connect", help="connect an external database as a virtual schema")
+    c = sub.add_parser("connect", help="connect an external database as a virtual schema", allow_abbrev=False)
     c.add_argument("source", nargs="?")
     c.add_argument("--name")
     c.add_argument("--url", help="a JDBC URL (or postgres:// URI) instead of host/port/database")
@@ -46,12 +47,13 @@ def _parser():
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--json", "-j", action="store_true")
 
-    s = sub.add_parser("source", help="list and manage connected sources")
-    ss = s.add_subparsers(dest="action")
-    lst = ss.add_parser("list")
+    s = sub.add_parser("source", help="list and manage connected sources", allow_abbrev=False)
+    s.add_argument("--json", "-j", action="store_true")
+    ss = s.add_subparsers(dest="action", parser_class=_Parser)
+    lst = ss.add_parser("list", allow_abbrev=False)
     lst.add_argument("--json", "-j", action="store_true")
     for action in ("show", "check", "reauth", "refresh", "remove"):
-        a = ss.add_parser(action)
+        a = ss.add_parser(action, allow_abbrev=False)
         a.add_argument("name")
         a.add_argument("--json", "-j", action="store_true")
         if action == "reauth":
@@ -80,6 +82,10 @@ def _emit(obj):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     as_json = _wants_json(argv)
+    if any(a == "--password" or a.startswith("--password=") for a in argv):
+        return _refuse(as_json, "there is deliberately no --password option: a command line is readable by "
+                                "every process on this machine. Use --password-file <path>, "
+                                "--password-stdin, or the hidden prompt.")
     try:
         args = _parser().parse_args(argv)
     except _BadInput as e:
@@ -104,20 +110,38 @@ def main(argv=None):
     except (plan.PlanError, ValueError) as e:
         code, result = 2, _failure(2, str(e))
     except artifacts.ArtifactError as e:
-        code, result = 1, _failure(1, str(e), None, "Nothing was installed. Check the network, then re-run.",
-                                   "artifact")
+        if e.kind == "checksum":
+            hint = ("Do not retry: a file that does not match its pin is a supply-chain alert. "
+                    "Nothing was installed. Report it at "
+                    "https://github.com/exasol-labs/exasol-personal-local-starterkit/issues")
+        else:
+            hint = "Nothing was installed. Check the network connection, then run the same command again."
+        code, result = 1, _failure(1, str(e), None, hint, "artifact_" + e.kind)
     except runtime.RuntimeError_ as e:
         rc = 3 if e.kind in ("no_database",) else 1
         code, result = rc, _failure(rc, str(e), None, None, e.kind)
+    except state.Busy as e:
+        code, result = 1, _failure(1, str(e), None, "Wait for it to finish, then run this command again.",
+                                   "busy")
     except state.StateError as e:
-        code, result = 1, _failure(1, str(e))
+        code, result = 1, _failure(1, str(e), None, None, "state")
     except sql.SqlError as e:
         # A database statement failed outside the steps that classify their
         # own errors. Still an answer with a kind, never a traceback.
         code, result = 1, _failure(1, sql.short(str(e)), None,
-                                   "Re-running the same command resumes where this one stopped.", e.kind)
+                                   "Running the same command again picks up where this one stopped.", e.kind)
     except KeyboardInterrupt:
         code, result = 130, _failure(130, "interrupted")
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        result = _failure(code, "stopped", None, None, "aborted")
+    except Exception as e:  # the --json contract holds for the unexpected too
+        import traceback
+        state.log("ERROR", traceback.format_exc())
+        code, result = 1, _failure(1, "unexpected error: %s: %s" % (type(e).__name__, state.redact(str(e))[:300]),
+                                   None, "The details are in the log: %s" % (
+                                       state.LOG.path if state.LOG and state.LOG.path else "~/.exasol-starter-kit/logs"),
+                                   "internal")
     finally:
         if ctx is not None and ctx._db is not None:
             ctx._db.close()
