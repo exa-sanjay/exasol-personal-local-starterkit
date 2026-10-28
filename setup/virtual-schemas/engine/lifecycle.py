@@ -50,7 +50,9 @@ def explain(kind, cfg, detail, first_time=False):
     pw_hint = "Pass the password with --password-file <path> (or answer the prompt)."
     table = {
         "auth": ("The source refused the user name or password.",
-                 again if first_time else "exakit source reauth %s" % name, pw_hint),
+                 again if first_time else "exakit source reauth %s" % name,
+                 "Check both: the user was '%s', and it must be a user of the source database, "
+                 "not of Exasol." % (cfg.get("user") or "?")),
         "network": ("The database cannot reach %s." % where, None,
                     "The connection starts INSIDE the database container, not on this PC. If the "
                     "source runs on this computer (or in a container), publish its port and use "
@@ -387,7 +389,7 @@ def _decode_secret_bytes(data, where):
                       "Set-Content -Encoding utf8)." % where)
 
 
-def _read_password(ctx, user, required=True, secret_label="Password"):
+def _read_password(ctx, user, required=True, secret_label="Password", can_keep=False):
     a = ctx.args
     path = getattr(a, "password_file", None) or os.environ.get("EXAKIT_VS_PASSWORD_FILE")
     pw = None
@@ -400,7 +402,9 @@ def _read_password(ctx, user, required=True, secret_label="Password"):
     elif getattr(a, "password_stdin", False):
         pw = sys.stdin.readline().rstrip("\r\n")
     elif ui_mod.interactive():
-        keep = "" if required else ", Enter keeps the stored one"
+        # Only offered when there IS a stored one to keep: on a first connect
+        # the line promised a password that did not exist.
+        keep = ", Enter keeps the stored one" if can_keep else ""
         pw = ctx.ui.ask_secret("%s for %s (hidden%s)" % (secret_label, user, keep))
     if not pw and not required:
         return None
@@ -756,7 +760,7 @@ def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requ
     changes = plan.changed_fields(connector, saved, inputs, requested_level)
     reuse_ok = facts["connection_owned"] and saved and not changes
     label = connector.get("secret_label", "Password")
-    password = _read_password(ctx, inputs["user"], required=False, secret_label=label)
+    password = _read_password(ctx, inputs["user"], required=False, secret_label=label, can_keep=reuse_ok)
     if password is None and not reuse_ok:
         if saved and facts["connection_owned"]:
             raise Fail(2, "The connection details changed (%s); rebuilding the connection needs the "
