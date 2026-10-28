@@ -3431,6 +3431,7 @@ exakit_load_dataset_dir() {
 #     [x] <each dataset not loaded yet, visible upfront and individually
 #          selectable — no extra keypress needed to see what is available>
 #   [ ] A local CSV / Parquet / JSON file
+#   [ ] An external database        <- only with EXAKIT_DATA_LOAD_OFFER_CONNECT=1
 #   [ ] <final_label>               <- mutually exclusive opt-out (Cancel/Skip)
 #
 # Already-loaded datasets are not offered; when every bundled dataset is
@@ -3557,6 +3558,16 @@ exakit_data_table_build() {
 "
     _dtb_n=$(( _dtb_n + 1 ))
     EXAKIT_TABLE_ROW_LOCAL="$_dtb_n"
+    # The standalone `exakit data-load` also offers an external database, read
+    # live as a virtual schema (exakit connect). Nothing is copied, so it is not
+    # a load, but it answers the same question this screen asks: how do I get my
+    # data in front of Exasol. The installer does not offer it.
+    if [ "${EXAKIT_DATA_LOAD_OFFER_CONNECT:-0}" = 1 ]; then
+        printf 'plain|An external database, queried live (PostgreSQL, MySQL, SQL Server, Oracle, Exasol)|0|idle|||||| \n' >> "$_dtb_f"
+        EXAKIT_TABLE_IDS="${EXAKIT_TABLE_IDS}connect
+"
+        _dtb_n=$(( _dtb_n + 1 ))
+    fi
     printf 'plain|Skip|0|idle|||||| \n' >> "$_dtb_f"
     EXAKIT_TABLE_IDS="$EXAKIT_TABLE_IDS
 "
@@ -3585,7 +3596,10 @@ exakit_data_load_menu() {
     [ -n "$(manifest_get components.exapump.profile 2>/dev/null)" ] || \
         die "No exapump connection profile is recorded — re-run the installer, then retry."
 
+    EXAKIT_DATA_LOAD_OFFER_CONNECT=0
+    command -v cmd_connect >/dev/null 2>&1 && EXAKIT_DATA_LOAD_OFFER_CONNECT=1
     exakit_data_load_select "Skip"
+    EXAKIT_DATA_LOAD_OFFER_CONNECT=0
     if [ "$EXAKIT_DATA_LOAD_SELECTION" = "none" ]; then
         info "Data loading cancelled."
         return 0
@@ -3609,6 +3623,7 @@ exakit_data_load_menu() {
     # taking this shell's animation with it.
     _menu_notes=""
     _menu_has_local=0
+    _menu_has_connect=0
     EXAKIT_DEFER_ERRORS=""
     if [ "$EXAKIT_TABLE_LIVE" = 1 ]; then
         EXAKIT_DEFER_ERRORS="$EXAKIT_TABLE_STATE.fatal"
@@ -3621,6 +3636,10 @@ exakit_data_load_menu() {
                 # this row does is a QUESTION, and a question cannot be asked
                 # under a frame that is still repainting itself.
                 _menu_has_local=1
+                ;;
+            connect)
+                # The connect wizard is all questions too: after the table.
+                _menu_has_connect=1
                 ;;
             *)
                 _kit_root="$(exakit_repo_root)" || _kit_root=""
@@ -3688,6 +3707,17 @@ exakit_data_load_menu() {
             _menu_status=5
         elif [ "$_local_status" -ne 0 ]; then
             _menu_status="$_local_status"
+        fi
+    fi
+    # The external database, last: the same wizard as `exakit connect`, which
+    # prints its own outcome and remedy. Its exit code (AGENTS.md) becomes the
+    # command's unless a load above already failed.
+    if [ "$_menu_has_connect" = 1 ]; then
+        printf '\n'
+        ( cmd_connect )
+        _connect_status=$?
+        if [ "$_connect_status" -ne 0 ] && [ "$_menu_status" -eq 0 ]; then
+            _menu_status="$_connect_status"
         fi
     fi
     while IFS='|' read -r _mn_kind _mn_text; do

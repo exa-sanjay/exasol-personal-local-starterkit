@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+**`exakit connect`: query an external database live, as a virtual schema.**
+PostgreSQL, MySQL, SQL Server, Oracle and another Exasol (or a schema of this
+one) become readable from the local database as `VS_<NAME>`, with nothing
+copied. It is a core part of the kit on macOS, Linux, WSL and Windows, not a
+marketplace add-on.
+
+- `exakit connect [<source>]` asks for the details (or takes a pasted JDBC
+  URL; any password in it is removed). It downloads the adapter and driver and
+  verifies them against SHA-256 pins in each `connector.json`, plus the
+  upstream checksum where one is published. It stages them in BucketFS and
+  registers the driver. If the Java runtime is missing it installs it,
+  asking before the one database restart this needs. It then creates the
+  CONNECTION, the adapter script and the virtual schema, and proves the link
+  by reading rows. New details go into a staging connection and replace the
+  old ones only after they work; a failed first connect leaves nothing behind.
+- `exakit source list | show | check | reauth | refresh | remove`. `remove`
+  drops only objects the kit tagged as its own. A shared adapter or driver
+  goes with the last source that uses it, and anything another object still
+  depends on is kept and named.
+- TLS: PostgreSQL, MySQL and SQL Server are encrypted without verifying the
+  server certificate, because Exasol Personal's import process has no trust
+  store yet. Oracle uses Native Network Encryption. An Exasol source is
+  verified by its certificate fingerprint. An unencrypted link is offered
+  only for local or private hosts. Snowflake is listed but unavailable until
+  certificate verification works.
+- Passwords are never on the command line (`--password-file` /
+  `--password-stdin`, or a hidden prompt) and never in the kit's files or
+  logs. Driver errors are redacted before they are printed or logged.
+- Every `exakit start` (and the database's boot entry, which now runs
+  `exakit start database`) re-links name resolution into the Java sandbox,
+  so a source can be given by host name (workaround for Exasol Personal's
+  script-language container; `EXAKIT_VS_DNS_WORKAROUND=0` turns it off).
+- `exakit data-load` offers "An external database, queried live" as a row
+  of its menu, which opens the same wizard.
+- Unattended: `EXAKIT_VS_SOURCE`, `EXAKIT_VS_NAME`, `EXAKIT_VS_JDBC_URL` (or
+  `_HOST` / `_PORT` / `_DATABASE`), `EXAKIT_VS_USER`, `EXAKIT_VS_SCHEMA`,
+  `EXAKIT_VS_PASSWORD_FILE`, `EXAKIT_VS_TLS`; `--json` answers one object with
+  `remedy` and `remedy_hint`; exit codes follow AGENTS.md.
+- New skill `exasol-virtual-schemas` (skills 1.13.0).
+
 ## 0.2.2
 
 **The Personal launcher comes from Exasol's S3 bucket first, verified, with

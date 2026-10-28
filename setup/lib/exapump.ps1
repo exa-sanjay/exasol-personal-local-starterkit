@@ -3494,7 +3494,7 @@ $script:ExakitTableRow = 0            # the row the dataset being loaded owns
 # drawn, and record the defaults / group range / exclusive row the way the
 # selection layer expects. Twin of exakit_data_table_build in exapump.sh.
 function New-ExakitDataTable {
-    param([Parameter(Mandatory)][string]$FinalLabel)
+    param([Parameter(Mandatory)][string]$FinalLabel, [switch]$OfferConnect)
     [void](New-ExakitTable -Title "Datasets to load")
     $ids = New-Object 'System.Collections.Generic.List[string]'
     $defaults = New-Object 'System.Collections.Generic.List[int]'
@@ -3532,6 +3532,13 @@ function New-ExakitDataTable {
     [void](Add-ExakitTableRow -Kind "plain" -Label "A local CSV / Parquet / JSON file, or a folder of them")
     [void]$ids.Add("local")
     $script:ExakitTableRowLocal = $ids.Count
+    # The standalone `exakit data-load` also offers an external database, read
+    # live as a virtual schema (exakit connect). Twin of the same row in
+    # exakit_data_table_build; the installer does not offer it.
+    if ($OfferConnect) {
+        [void](Add-ExakitTableRow -Kind "plain" -Label "An external database, queried live (PostgreSQL, MySQL, SQL Server, Oracle, Exasol)")
+        [void]$ids.Add("connect")
+    }
     [void](Add-ExakitTableRow -Kind "plain" -Label $FinalLabel)
     [void]$ids.Add("")
     $script:ExakitTableRowSkip = $ids.Count
@@ -3564,7 +3571,7 @@ function Get-ExakitDataTableRow {
 # Enter still does something. Returns a string array of ids ("tpch", "local") or
 # @("none"). Twin of exakit_data_load_select in exapump.sh.
 function Select-ExakitDataLoad {
-    param([Parameter(Mandatory)][string]$FinalLabel)
+    param([Parameter(Mandatory)][string]$FinalLabel, [switch]$OfferConnect)
     # EXAKIT_DATA_FILE mirrors the EXAKIT_DATASETS contract: naming a file IS
     # choosing the local-file option, so the table never draws. The path (and
     # EXAKIT_DATA_TABLE) are consumed by Import-ExakitLocalFile as its answers.
@@ -3575,7 +3582,7 @@ function Select-ExakitDataLoad {
         $script:ExakitTableIds = @()
         return @("local")
     }
-    New-ExakitDataTable -FinalLabel $FinalLabel
+    New-ExakitDataTable -FinalLabel $FinalLabel -OfferConnect:$OfferConnect
     # The local-file row being row 1 means there was no group above it, which
     # means nothing is pending.
     # Nothing said about it - twin of the same silence in exapump.sh. The table
@@ -3607,7 +3614,8 @@ function Show-ExakitDataLoadMenu {
     if (-not (Get-ExakitManifestValue "components.exapump.profile")) {
         Fail "No exapump connection profile is recorded - re-run the installer, then retry."
     }
-    $chosen = Select-ExakitDataLoad -FinalLabel "Skip"
+    $offerConnect = [bool](Get-Command Invoke-ExakitConnectWizard -ErrorAction SilentlyContinue)
+    $chosen = Select-ExakitDataLoad -FinalLabel "Skip" -OfferConnect:$offerConnect
     if ($chosen -contains "none") {
         Info "Data loading cancelled."
         return
@@ -3623,6 +3631,16 @@ function Show-ExakitDataLoadMenu {
                 # answer was skip): exit 5, as every unconfirmed command does.
                 # Twin of _menu_status=5 in exakit_data_load_menu.
                 if ($result -eq "declined") { $script:PendingExitCode = 5 }
+            } elseif ($id -eq "connect") {
+                # The same wizard as `exakit connect`, after the table: it is
+                # all questions. It prints its own outcome; its exit code
+                # becomes the command's unless something above already set one.
+                Stop-ExakitDataTableRun
+                Write-Host ""
+                Invoke-ExakitConnectWizard
+                if ($script:VirtualSchemasExitCode -ne 0 -and $script:PendingExitCode -eq 0) {
+                    $script:PendingExitCode = $script:VirtualSchemasExitCode
+                }
             } else {
                 $kitRoot = Get-ExakitRepoRoot
                 if (-not $kitRoot) { Fail "Could not find the kit's sql/ and data/ files to load." }

@@ -58,6 +58,25 @@ It also gives your AI agent eight skills, one for each part of the kit. They wor
 
 ## What's new
 
+### Query another database live: `exakit connect`
+
+Your data does not have to be copied into Exasol first. `exakit connect` makes a table in PostgreSQL, MySQL, SQL Server, Oracle or another Exasol readable from the local database as a virtual schema, `VS_<NAME>`. Every query reads the source live. It is part of the kit, so there is nothing to install, and `exakit data-load` offers the same wizard as one of its rows.
+
+```bash
+exakit connect                         # asks for the source and its details, the password hidden
+exakit source list                     # every source, its TLS level and last check
+exakit sql 'SELECT * FROM "VS_SALES"."orders" LIMIT 10'
+```
+
+The kit downloads the adapter and the JDBC driver, checks them against pinned checksums, and installs the database's Java runtime if needed. That is the one step that restarts the database, and the kit asks first. It then proves the link by reading real rows. The password is stored only inside the database's CONNECTION object. Your AI clients can query the new schema through MCP straight away. `exakit source check | reauth | refresh | remove` manage a source afterwards.
+
+| Source | TLS on Exasol Personal |
+|---|---|
+| PostgreSQL, MySQL, SQL Server | Encrypted, the server certificate is not verified yet |
+| Oracle | Oracle Native Network Encryption |
+| Exasol | Verified, the certificate is pinned by its fingerprint |
+| Snowflake | Not available yet: its driver must verify certificates |
+
 ### Add-ons through `exakit marketplace`
 
 The base install stays small. When you want more, you pick an add-on by the outcome you want, and the kit installs it, checks that it works, and keeps it current with `exakit update`. The installer asks once at the end of a successful install, and `exakit marketplace` opens the same list at any time.

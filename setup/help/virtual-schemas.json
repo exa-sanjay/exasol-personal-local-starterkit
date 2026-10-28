@@ -29,7 +29,7 @@
   "commands": [
     {
       "command": "exakit connect",
-      "options": "[<source>] [--name <name>] [--url <jdbc-url>] [--user <u>] [--schema <s>] [--tls encrypt|none] [--password-file <path>] [--yes] [--dry-run] [--json]",
+      "options": "[<source>] [--name <name>] [--url <jdbc-url> | --host <h> --port <p> --database <d>] [--user <u>] [--schema <s>] [--tls verify|encrypt|none] [--password-file <path> | --password-stdin] [--yes] [--dry-run] [--json]",
       "summary": "Connect an external database as a virtual schema.",
       "examples": [
         "exakit connect",
@@ -75,7 +75,7 @@
   "environment": [
     {
       "name": "EXAKIT_VS_SOURCE",
-      "effect": "The source type for a run without a terminal (postgresql, or an alias such as pg)."
+      "effect": "The source type for a run without a terminal: postgresql (pg), mysql, sqlserver (mssql), oracle, exasol."
     },
     {
       "name": "EXAKIT_VS_NAME",
@@ -103,7 +103,7 @@
     },
     {
       "name": "EXAKIT_VS_TLS",
-      "effect": "encrypt (the default) or none - none only for a host on this machine or a private network. Exasol Personal cannot verify server certificates yet."
+      "effect": "verify, encrypt or none. The default is the strongest level the source allows: verify for Exasol (certificate fingerprint), encrypt for the rest. none only for a host on this machine or a private network."
     },
     {
       "name": "EXAKIT_CONFIRM_RUNTIME_UPDATE",

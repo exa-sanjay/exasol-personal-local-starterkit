@@ -942,6 +942,14 @@ function Invoke-CmdConnect {
     if (-not (Get-Command Invoke-VirtualSchemasEngine -ErrorAction SilentlyContinue)) {
         Deny-ExakitInput "This kit copy does not carry virtual schemas yet. Update the kit first: exakit update"
     }
+    Invoke-ExakitConnectWizard -Arguments $Arguments
+    exit $script:VirtualSchemasExitCode
+}
+
+# The connect itself, without the exit: `exakit data-load` runs it from its
+# menu and carries on. Exit code in $script:VirtualSchemasExitCode.
+function Invoke-ExakitConnectWizard {
+    param([string[]]$Arguments = @())
     # A source needs every database start to go through `exakit start
     # database` (the post-start step re-links its name resolution). A Startup
     # entry written by an older kit still runs the launcher directly; rewrite
@@ -951,7 +959,6 @@ function Invoke-CmdConnect {
         try { [void](Register-ExakitAutostart -Id "database") } catch { }
     }
     Invoke-VirtualSchemasEngine -Arguments (@("connect") + @($Arguments))
-    exit $script:VirtualSchemasExitCode
 }
 
 function Invoke-CmdSource {
