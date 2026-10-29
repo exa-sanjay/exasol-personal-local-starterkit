@@ -43,7 +43,7 @@
     {"id": "host", "label": "Catalog host", "required": true, "example": "iceberg-rest.example.com"},
     {"id": "port", "label": "Catalog port", "type": "port", "default": 8181},
     {"id": "path", "label": "Catalog URL path (optional)"},
-    {"id": "catalog", "label": "Catalog type: iceberg or unity", "default": "iceberg", "connection": false},
+    {"id": "catalog", "label": "Catalog type: iceberg or unity", "default": "iceberg"},
     {"id": "namespace", "label": "Namespace (Unity Catalog: catalog.schema)", "required": true, "connection": false},
     {"id": "warehouse", "label": "Warehouse (Iceberg REST; e.g. s3://warehouse/)"},
     {"id": "endpoint", "label": "S3-compatible storage endpoint (optional, e.g. http://minio:9000)"},
@@ -62,6 +62,16 @@
     "from_url": {"https": "verify", "http": "none"}
   },
   "check": {"kind": "vs"},
+  "messages": {
+    "auth": {"message": "The catalog or the storage refused the credentials.",
+             "hint": "Check the S3 access key ({user}) and its secret key, or the catalog token. A 403 from storage can also be a bucket policy that does not let this key read the table's files."},
+    "network": {"message": "The database cannot reach the catalog at {host}:{port} or the storage endpoint {endpoint}.",
+                "hint": "Both are reached from INSIDE the database container, not from this PC. Something on this computer is reached as localhost (the kit uses the container's host alias); check that the catalog and the storage answer on the ports given."},
+    "schema_missing": {"message": "The catalog has no namespace named {namespace}.",
+                       "hint": "Check the namespace (Unity Catalog: catalog.schema); re-run connect with EXAKIT_VS_NAMESPACE."},
+    "permission": {"message": "The storage refused to let the key read the table's files.",
+                   "hint": "Grant the access key read access to the bucket, then: exakit source check {name|lower}"}
+  },
   "notes": [
     "Table and column names arrive upper-cased (ORDERS, ORDER_ID): query them without quotes.",
     "Iceberg tables with equality deletes, or ORC or Avro data files, are not read; positional deletes and deletion vectors are.",

@@ -319,7 +319,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(artifacts.load_registry()["adapters"]["postgresql/4.1.0"]["refs"], [])
 
     def _cfg(self, name, version):
-        art = dict(artifacts.describe(PG), adapter_key="postgresql/%s" % version, adapter_version=version,
+        art = dict(artifacts.describe(PG, "SALES"), adapter_key="postgresql/%s" % version, adapter_version=version,
                    bucket="exakit-vs/postgresql/%s" % version)
         return {"name": name, "connector": "postgresql", "artifacts": art,
                 "objects": {"schema": "VS_" + name, "connection": "EXAKIT_SRC_" + name,
@@ -534,7 +534,7 @@ class OtherConnectors(unittest.TestCase):
         remote = plan.vs_properties(c, {"connection": "C"}, dict(cfg, host="10.0.0.5"), "10.0.0.5")
         self.assertEqual((remote["IMPORT_FROM_EXA"], remote["EXA_CONNECTION"]), ("true", "C_EXA"))
         self.assertEqual(plan.tls_start(c, "loopback", None), "verify")
-        self.assertEqual(artifacts.describe(c)["driver_name"], None)
+        self.assertEqual(artifacts.describe(c, "X")["driver_name"], None)
         p = plan.build_plan(c, {"name": "X", "host": "localhost"}, {})
         self.assertNotIn("driver", [st["step"] for st in p["steps"]])
 
@@ -667,11 +667,73 @@ class Runtimes(unittest.TestCase):
     def test_custom_runtime_version(self):
         reg = {"runtimes": {"rust": {"version": "0.33.0", "file": "lc-rust-0.33.0.tar.gz"}}}
         row = {"source": "C:\\tmp\\lc-rust-0.33.0.tar.gz"}
-        self.assertEqual(lifecycle._custom_runtime_version(row, "rust", reg), "0.33.0")
-        self.assertEqual(lifecycle._custom_runtime_version({"source": "/x/lc-rust-0.32.0.tar.gz"}, "rust",
-                                                           {"runtimes": {}}), "0.32.0")
-        self.assertIsNone(lifecycle._custom_runtime_version({"source": "/x/my-own.tar.gz"}, "rust",
-                                                            {"runtimes": {}}))
+        self.assertEqual(lifecycle._custom_runtime_version(row, "rust", reg), ("0.33.0", True))
+        with tempfile.TemporaryDirectory() as d:
+            # A file NAMED like the pin is not the pin: only its checksum is.
+            named = Path(d) / "lc-rust-0.33.0.tar.gz"
+            named.write_bytes(b"a local build")
+            self.assertEqual(lifecycle._custom_runtime_version({"source": str(named)}, "rust", {"runtimes": {}}),
+                             (None, False))
+            spec = dict(plan.runtime_spec("rust"), sha256=artifacts.sha256_file(named))
+            self.assertEqual(lifecycle._custom_runtime_version({"source": str(named)}, "rust", {"runtimes": {}},
+                                                               spec), (spec["version"], True))
+        self.assertEqual(lifecycle._custom_runtime_version({"source": "/x/gone.tar.gz"}, "rust", {"runtimes": {}}),
+                         (None, False))
+
+    def test_adapter_scopes(self):
+        lake = CS["lakehouse"]
+        self.assertEqual(plan.adapter_scope(PG), "version")
+        self.assertEqual(plan.adapter_scope(lake), "connector")
+        self.assertEqual(plan.script_name(PG, "SALES"), "POSTGRESQL_4_1_0")
+        self.assertEqual(plan.script_name(lake, "LAKE"), "LAKEHOUSE_ADAPTER")
+        self.assertEqual(plan.adapter_key(lake, "LAKE"), "lakehouse/0.57.2")
+        mine = _native_connector(runtime="lua", adapter={"version": "1.0.2", "file": "a.lua", "url": "https://x/a",
+                                                         "sha256": "c" * 64, "script_scope": "source"})
+        self.assertEqual(plan.adapter_scope(mine), "source")
+        self.assertEqual(plan.script_name(mine, "sales"), "NATIVEX_SALES")
+        self.assertEqual(plan.adapter_key(mine, "sales"), "nativex/1.0.2/SALES")
+
+    def test_probe_name_cannot_be_a_source_schema(self):
+        self.assertEqual(sql.probe_schema_name("x"), "EXAKIT_PROBE_X")
+        # The schema a source named x_probe gets is VS_X_PROBE - never this.
+        self.assertNotEqual(sql.probe_schema_name("x"), sql.object_names("x_probe")["schema"])
+
+    def test_removal_plan_with_a_shared_fixed_script(self):
+        reg = {"adapters": {
+            "lakehouse/0.57.2": {"refs": ["A"], "script": "EXAKIT_VS.LAKEHOUSE_ADAPTER", "bucket": "exakit-vs/lakehouse/0.57.2",
+                                 "companions": ["LAKEHOUSE_SCAN"]},
+            "lakehouse/0.58.0": {"refs": ["B"], "script": "EXAKIT_VS.LAKEHOUSE_ADAPTER", "bucket": "exakit-vs/lakehouse/0.58.0",
+                                 "companions": ["LAKEHOUSE_SCAN"]},
+            "lakehouse/0.56.0": {"refs": [], "script": "EXAKIT_VS.LAKEHOUSE_ADAPTER"}}, "drivers": {}}
+        cfg = {"name": "A", "objects": {"schema": "VS_A", "connection": "EXAKIT_SRC_A",
+                                        "script": "EXAKIT_VS.LAKEHOUSE_ADAPTER"},
+               "artifacts": {"adapter_key": "lakehouse/0.57.2", "bucket": "exakit-vs/lakehouse/0.57.2"}}
+        kinds = dict(lifecycle.removal_plan(cfg, reg))
+        # B still uses the same fixed-name script: A's version gives up only its files.
+        self.assertNotIn("adapter_script", kinds)
+        self.assertEqual(kinds["bucket_folder"], "exakit-vs/lakehouse/0.57.2")
+        self.assertNotIn("script", kinds)
+        # A leftover entry nobody references does not count as another version.
+        self.assertEqual(lifecycle._other_versions(reg, "lakehouse/0.57.2"), ["lakehouse/0.58.0"])
+        del reg["adapters"]["lakehouse/0.58.0"]
+        kinds = lifecycle.removal_plan(cfg, reg)
+        self.assertIn(("adapter_script", "EXAKIT_VS.LAKEHOUSE_ADAPTER"), kinds)
+        self.assertIn(("script", "EXAKIT_VS.LAKEHOUSE_SCAN"), kinds)
+
+    def test_messages_follow_the_runtime_and_the_connector(self):
+        lake_cfg = {"name": "LAKE", "connector": "lakehouse", "host": "10.0.0.9", "port": 8181, "user": "AKIA1",
+                    "endpoint": "http://s3:9000", "namespace": "shop", "artifacts": {"runtime": "rust"}}
+        f = lifecycle._source_fail(lake_cfg, "network", None)
+        self.assertIn("storage endpoint http://s3:9000", str(f))
+        f = lifecycle._source_fail(lake_cfg, "auth", None)
+        self.assertIn("S3 access key (AKIA1)", f.hint)
+        # A Rust runtime that cannot resolve a name: not the Java-sandbox story.
+        f = lifecycle._source_fail(dict(lake_cfg, host="127.0.0.1"), "dns", None)
+        self.assertEqual(f.kind, "network")
+        f = lifecycle._source_fail({"name": "PG", "connector": "postgresql", "host": "h", "port": 1}, "tls", None,
+                                   first_time=True)
+        self.assertIsNone(f.remedy)
+        self.assertIn("--tls none", f.hint)
 
     def test_native_failure_kinds(self):
         tls = ("UDF error: catalog request failed: error sending request for url (https://x/v1/config): "
@@ -734,9 +796,26 @@ class Lakehouse(unittest.TestCase):
         v = plan.validate(self.LH, dict(self.BASE, catalog="Unity", namespace="main.sales"))
         self.assertEqual(v["catalog"], "unity")
         for bad in (dict(self.BASE, warehouse=None), dict(self.BASE, catalog="glue"),
-                    dict(self.BASE, catalog="unity", namespace="nodot"), dict(self.BASE, endpoint="minio:9000")):
-            with self.assertRaises(plan.PlanError):
+                    dict(self.BASE, catalog="unity", namespace="nodot"),
+                    dict(self.BASE, catalog="unity", namespace="."),
+                    dict(self.BASE, catalog="unity", namespace="a.b; DROP"),
+                    dict(self.BASE, endpoint="minio:9000"),
+                    dict(self.BASE, endpoint="http://s3.amazonaws.com"),       # plain HTTP across the internet
+                    dict(self.BASE, endpoint="http://key:secret@minio:9000")):
+            with self.subTest(bad=bad), self.assertRaises(plan.PlanError):
                 plan.validate(self.LH, bad)
+        plan.validate(self.LH, dict(self.BASE, endpoint="https://s3.amazonaws.com"))
+        plan.validate(self.LH, dict(self.BASE, endpoint="http://10.0.0.5:9000"))
+
+    def test_url_rejects_credentials_and_junk(self):
+        for bad in ("https://AKIA:secretZZ@catalog.example.com", "http://localhost:18181 extra"):
+            with self.assertRaises(net.UrlError) as cm:
+                plan.parse_url(self.LH, bad)
+            self.assertNotIn("secretZZ", str(cm.exception))
+
+    def test_catalog_type_is_a_connection_change(self):
+        saved = dict(self.BASE, tls="none", params={})
+        self.assertIn("catalog", plan.changed_fields(self.LH, saved, dict(saved, catalog="unity"), "none"))
 
     def test_plan(self):
         p = plan.build_plan(self.LH, self.BASE, {"runtime": "rust", "runtime_installed": True,

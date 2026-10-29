@@ -46,13 +46,22 @@ def object_names(name):
     return {"connection": "EXAKIT_SRC_%s" % n, "schema": "VS_%s" % n}
 
 
-def adapter_script_name(connector_id, version, fixed=None):
+def probe_schema_name(name):
+    """The throwaway schema a source is tested through. Source schemas are
+    always VS_<NAME>, so no source can ever own this name."""
+    return "EXAKIT_PROBE_%s" % validate_name(name)
+
+
+def adapter_script_name(connector_id, version, fixed=None, source=None):
     """Versioned (POSTGRESQL_4_1_0), so an upgrade sits beside the old
-    version - unless the adapter dictates its name: a native library is
-    found by an entry point named after the script (LAKEHOUSE_ADAPTER ->
-    __exa_udf_entry_LAKEHOUSE_ADAPTER), so its script name is fixed."""
+    version - unless the adapter dictates its name (a native library is
+    found by an entry point named after the script: LAKEHOUSE_ADAPTER ->
+    __exa_udf_entry_LAKEHOUSE_ADAPTER), or the script is the source's own
+    (DATABRICKS_SALES: an adapter patched with one source's pin)."""
     if fixed:
         return fixed
+    if source:
+        return "%s_%s" % (connector_id.upper(), validate_name(source))
     return "%s_%s" % (connector_id.upper(), re.sub(r"[^A-Za-z0-9]", "_", version))
 
 
@@ -237,7 +246,8 @@ _KINDS = [
     ("tls", r"SSL|PKIX|trustAnchors|certificate|does not support SSL|handshake"),
     ("auth", r"password authentication failed|authentication failed|Access denied for user|"
              r"Login failed|ORA-01017|invalid username|role \S+ does not exist|"
-             r"HTTP 401|HTTP 403|Unauthorized|InvalidAccessKeyId|SignatureDoesNotMatch|AccessDenied"),
+             r"HTTP 401|HTTP 403|Unauthorized|InvalidAccessKeyId|SignatureDoesNotMatch|AccessDenied|"
+             r"PermissionDenied|status: 40[13]\b"),
     ("database_missing", r"database \S+ does not exist|Unknown database|Cannot open database"),
     ("permission", r"permission denied|insufficient privilege|not authorized"),
     ("mixed_case", r"E-VSPG-6|cannot be used in virtual schema"),

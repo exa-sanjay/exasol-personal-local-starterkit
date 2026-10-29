@@ -23,8 +23,14 @@ _URL = re.compile(r"^(https?)://([^/:?#]+)(?::(\d{1,5}))?(/[^?#]*)?", re.I)
 
 
 def parse_url(connector, text):
-    m = _URL.match((text or "").strip())
-    if not m:
+    t = (text or "").strip()
+    if re.match(r"^https?://[^/?#]*@", t, re.I):
+        # Never accepted, never echoed: the key would sit in shell history and
+        # the CONNECTION's address in clear text.
+        raise net.UrlError("the catalog URL carries credentials; give the access key with --user and the "
+                           "secret with --password-file instead")
+    m = _URL.match(t)
+    if not m or t[m.end():] not in ("", "/"):
         raise net.UrlError("this does not look like a catalog URL (expected http://host:port or "
                            "https://host)")
     scheme = m.group(1).lower()
@@ -60,11 +66,20 @@ def validate(connector, v):
     if v["catalog"] == "iceberg" and not v.get("warehouse"):
         raise plan.PlanError("Warehouse is required for an Iceberg REST catalog: set EXAKIT_VS_WAREHOUSE "
                              "(the identifier the catalog registered, e.g. s3://warehouse/)")
-    if v["catalog"] == "unity" and v.get("namespace") and "." not in v["namespace"]:
+    if v["catalog"] == "unity" and v.get("namespace") and \
+            not re.match(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$", v["namespace"]):
         raise plan.PlanError("A Unity Catalog namespace is catalog.schema (e.g. main.sales)")
     ep = v.get("endpoint")
-    if ep and not re.match(r"^https?://[^/\s]+", ep, re.I):
-        raise plan.PlanError("The storage endpoint must be a URL such as http://minio:9000")
+    if ep:
+        m = re.match(r"^(https?)://([^/\s:@]+)(?::\d{1,5})?/?$", ep, re.I)
+        if not m:
+            raise plan.PlanError("The storage endpoint must be a URL such as http://minio:9000 (no "
+                                 "credentials, no path)")
+        # The rule the catalog follows: plain HTTP only on this machine or a
+        # private network, never across the internet.
+        if m.group(1).lower() == "http" and net.classify_host(m.group(2)) == "public":
+            raise plan.PlanError("A plain-HTTP storage endpoint is only allowed on this machine or a private "
+                                 "network; %s is a public host - use https" % m.group(2))
     return v
 
 

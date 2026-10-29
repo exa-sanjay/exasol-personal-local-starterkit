@@ -170,7 +170,7 @@ def bucket_rel(connector, version=None):
     return Path(KIT_BUCKET) / connector["id"] / (version or connector["adapter"]["version"])
 
 
-def describe(connector):
+def describe(connector, name):
     """What a source built from this connector right now records about its
     artifacts - so it can later be checked and removed by what it USES, not
     by whatever the connector pins after a kit update."""
@@ -178,9 +178,10 @@ def describe(connector):
     drv = connector.get("driver") if (connector.get("driver") or {}).get("settings") else None
     ad = plan.adapter(connector)
     return {
-        "adapter_key": "%s/%s" % (connector["id"], ad["version"]),
+        "adapter_key": plan.adapter_key(connector, name),
         "adapter_version": ad["version"],
         "adapter_file": ad["stage_name"],
+        "adapter_scope": plan.adapter_scope(connector),
         "runtime": plan.runtime_kind(connector),
         "bucket": bucket_rel(connector).as_posix(),
         "driver_name": drv["settings"]["DRIVERNAME"] if drv else None,

@@ -20,7 +20,10 @@ What a connector.json can say beyond the JDBC basics:
                  "aarch64": {...}}) for native adapters; adapter.extract
                  names the library inside an archive download;
                  adapter.script_name fixes the adapter script's name (a
-                 native library's entry point is named after its script).
+                 native library's entry point is named after its script;
+                 every source of the connector then moves versions together);
+                 adapter.script_scope "source" gives each source its own
+                 script (an adapter patched with that source's pin).
   scripts        companion scripts the adapter calls by name, as SQL
                  templates with {schema} and {udf_object}; they live in the
                  kit's adapter schema and go with the connector's last adapter.
@@ -157,6 +160,37 @@ def adapter(connector, arch=None):
         a.update(asset)
     a["stage_name"] = Path(a["extract"]).name if a.get("extract") else a["file"]
     return a
+
+
+def adapter_scope(connector):
+    """Who an adapter script belongs to:
+
+      version    one script per adapter version (POSTGRESQL_4_1_0); an
+                 upgrade sits beside the old version until its last source
+                 moves. JAR adapters.
+      connector  one script for the whole connector, its name fixed by the
+                 adapter (a native library's entry point); every source of
+                 the connector moves to a new version together.
+      source     one script per source (an adapter patched with that
+                 source's own certificate pin)."""
+    a = connector["adapter"]
+    if a.get("script_scope") == "source":
+        return "source"
+    return "connector" if a.get("script_name") else "version"
+
+
+def script_name(connector, source_name):
+    a = connector["adapter"]
+    return sql.adapter_script_name(connector["id"], a["version"], a.get("script_name"),
+                                   source_name if adapter_scope(connector) == "source" else None)
+
+
+def adapter_key(connector, source_name, version=None):
+    """The registry key a source's adapter is counted under."""
+    key = "%s/%s" % (connector["id"], version or connector["adapter"]["version"])
+    if adapter_scope(connector) == "source":
+        key += "/" + sql.validate_name(source_name)
+    return key
 
 
 def connection_user(connector, inputs):
@@ -397,7 +431,7 @@ def build_plan(connector, inputs, facts):
     adapter_schema_foreign, script_exists."""
     names = sql.object_names(inputs["name"])
     ad = adapter(connector)
-    script = sql.adapter_script_name(connector["id"], ad["version"], ad.get("script_name"))
+    script = script_name(connector, inputs["name"])
     drv = driver(connector)
     kind = runtime_kind(connector)
     rt_label = RUNTIME_LABELS.get(kind, kind)

@@ -19,7 +19,6 @@ Rules every command here keeps:
 """
 
 import os
-import re
 import sys
 import time
 
@@ -66,10 +65,14 @@ def explain(kind, cfg, detail, first_time=False):
                 "exakit source check %s" % name,
                 "The Java sandbox needs the name-resolution links the kit adds after every database "
                 "start; check puts them back. An IP address instead of the name always works."),
+        # On a first connect nothing was saved, so a bare `connect --tls none`
+        # would know none of the details: the advice is to repeat the command.
         "tls": ("The encrypted connection to %s failed." % where,
-                _connect_cmd(cfg, "--tls", "none"),
+                None if first_time else _connect_cmd(cfg, "--tls", "none"),
                 "If the source does not offer TLS at all, an unencrypted connection is allowed for "
-                "hosts on this machine or a private network. " + pw_hint),
+                "hosts on this machine or a private network%s. " % (
+                    ": run the same connect command again with --tls none added" if first_time else "")
+                + pw_hint),
         "tls_policy": ("The database's Java security policy blocked the connection.",
                        "exakit source check %s" % name,
                        "The driver registration is missing NOSECURITY=YES; check re-registers it."),
@@ -90,14 +93,39 @@ def explain(kind, cfg, detail, first_time=False):
                              "Connecting again installs the runtime version this kit pins (one restart)."),
         "mixed_case": ("The source has mixed-case table names the adapter refused.", None, None),
     }
-    return table.get(kind, ("The source could not be used: %s" % detail, None, None))
+    msg, remedy, hint = table.get(kind, ("The source could not be used: %s" % detail, None, None))
+    # A connector whose source is not "a database with users" words its own
+    # (Lakehouse: S3 keys, a catalog and a storage endpoint). Templates take
+    # the source's fields: {host}, {port}, {endpoint}, {user}, ...
+    own = (_connector_or_none(cfg) or {}).get("messages", {}).get(kind)
+    if own:
+        values = dict((k, v) for k, v in cfg.items() if isinstance(v, (str, int)))
+        values.setdefault("endpoint", "(none)")
+        msg = plan.render(own["message"], values) if own.get("message") else msg
+        hint = plan.render(own["hint"], values) if own.get("hint") else hint
+    return msg, remedy, hint
+
+
+def _connector_or_none(cfg):
+    try:
+        return plan.load_connectors().get(cfg.get("connector"))
+    except Exception:  # a message must never fail on a broken connector folder
+        return None
 
 
 def _source_fail(cfg, kind, err, first_time=False):
     detail = sql.short(str(err)) if err else ""
+    runtime_kind = (cfg.get("artifacts") or {}).get("runtime", "java")
+    if kind == "dns" and runtime_kind != "java":
+        # Only the Java sandbox has the name-resolution gap the kit repairs;
+        # a Rust or Lua runtime that cannot resolve a name means the name does
+        # not resolve from the database at all.
+        kind = "network"
     if kind == "network" and cfg.get("host") and not net.is_ip(cfg["host"]) and \
             net.classify_host(cfg["host"]) != "loopback" and not net.resolve_here(cfg["host"]):
         kind = "unresolvable"
+    if kind == "runtime_mismatch":
+        _runtime_suspect(runtime_kind)
     msg, remedy, hint = explain(kind, cfg, detail, first_time)
     if detail and kind not in ("unknown",):
         hint = "%s (engine said: %s)" % (hint, detail) if hint else "(engine said: %s)" % detail
@@ -262,16 +290,24 @@ def _script_languages(ctx):
         return ""
 
 
-def _custom_runtime_version(row, kind, reg=None):
-    """The version of the custom SLC registered under the kit's alias: what
-    the kit recorded when it installed it, else the version in the source
-    file's name, else None (someone else's, unknown)."""
+def _custom_runtime_version(row, kind, reg=None, spec=None):
+    """(version, kit_owned) of the custom SLC registered under the kit's
+    alias. The kit's own record wins when it describes the file the launcher
+    installed. Otherwise only a file whose SHA-256 IS the pinned tarball is
+    taken as the pinned version - a name like lc-rust-0.33.0.tar.gz proves
+    nothing (a local build has a different fingerprint). Anything else is
+    (None, False): someone else's runtime, version unknown."""
     rec = ((reg or artifacts.load_registry()).get("runtimes") or {}).get(kind) or {}
     src = (row or {}).get("source") or ""
     if rec.get("version") and (not rec.get("file") or os.path.basename(src) == rec["file"]):
-        return rec["version"]
-    m = re.search(r"lc-%s-(\d+(?:\.\d+)+)" % re.escape(kind), os.path.basename(src))
-    return m.group(1) if m else None
+        return rec["version"], True
+    spec = spec or plan.runtime_spec(kind)
+    try:
+        if src and os.path.isfile(src) and artifacts.sha256_file(src) == spec["sha256"]:
+            return spec["version"], True
+    except OSError:
+        pass
+    return None, False
 
 
 def _runtime_facts(ctx, connector, dry_run, foreign_adapter_schema):
@@ -295,21 +331,31 @@ def _runtime_facts(ctx, connector, dry_run, foreign_adapter_schema):
     spec = plan.runtime_spec(kind)
     row = ctx.rt.slc(spec["alias"])
     installed = bool(row and row["installed"] and row.get("type") == "custom")
-    conflict = None
+    rec = (artifacts.load_registry().get("runtimes") or {}).get(kind) or {}
+    conflict, foreign = None, False
     if installed:
-        version = _custom_runtime_version(row, kind)
+        version, owned = _custom_runtime_version(row, kind, spec=spec)
+        foreign = not owned
         if version != spec["version"]:
             conflict = version or "of an unknown version"
+        elif rec.get("suspect"):
+            # An adapter of the pinned version failed to load in it
+            # (fingerprint mismatch): whatever the record says, replace it.
+            conflict = "that this adapter does not load in"
     active = installed and ("%s=" % spec["alias"]) in _script_languages(ctx)
+    if rec.get("pending"):
+        # Recorded by the kit but never proven active after its restart (an
+        # interrupted run): the restart is still owed.
+        active = False
     return {"runtime": kind, "runtime_installed": installed, "runtime_active": active,
-            "runtime_conflict": conflict, "dns": "n/a"}
+            "runtime_conflict": conflict, "runtime_foreign": foreign, "dns": "n/a"}
 
 
 def gather_facts(ctx, connector, inputs, dry_run=False):
     db, rt = ctx.db, ctx.rt
     names = sql.object_names(inputs["name"])
     ad = plan.adapter(connector)
-    script = sql.adapter_script_name(connector["id"], ad["version"], ad.get("script_name"))
+    script = plan.script_name(connector, inputs["name"])
     exa = rt.exa_root
     adapter_cache = state.cache_dir() / ad["sha256"] / ad["file"]
     staged = exa / artifacts.BUCKET_DIR / artifacts.bucket_rel(connector) / ad["stage_name"]
@@ -489,27 +535,43 @@ def _probe(ctx, connector, conn_name, cfg=None, host=None):
 
 def _probe_vs(ctx, connector, conn_name, cfg, host):
     """A source with no JDBC side to read through (native and REST adapters):
-    the adapter itself is the probe. Creating a virtual schema on the
-    candidate connection makes it reach the source, log in and read the
-    catalog; the throwaway schema is dropped again either way."""
+    the adapter itself is the probe. A virtual schema on the candidate
+    connection makes it reach the catalog and log in; reading one row
+    through it proves the storage side too (keys, endpoint), which the
+    catalog alone never touches. The throwaway schema is named so no source
+    can own it (sources are VS_*), carries the kit's COMMENT from the moment
+    it exists, and is dropped only while it carries it."""
     db = ctx.db
     names = dict(cfg["objects"], connection=conn_name)
-    probe = cfg["objects"]["schema"] + "_PROBE"
+    probe = sql.probe_schema_name(cfg["name"])
     script = cfg["objects"]["script"].split(".", 1)[1]
-    rows = db.run("SELECT SCHEMA_IS_VIRTUAL FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s" % sql.literal(probe))
-    ours = db.run("SELECT 1 FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE SCHEMA_NAME = %s AND ADAPTER_SCRIPT_SCHEMA = %s"
-                  % (sql.literal(probe), sql.literal(sql.ADAPTER_SCHEMA)))
-    if rows and not ours:
+    existing = db.run("SELECT SCHEMA_COMMENT FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s" % sql.literal(probe))
+    if existing and not _owned(existing):
         raise Fail(2, "A schema named %s exists and was not created by the kit; the kit needs that name "
                       "for a moment to test the source. Rename or drop it." % probe)
     props = plan.vs_properties(connector, names, cfg, host or cfg.get("db_host") or cfg.get("host"))
     try:
-        if ours:
+        if existing:  # left over by an interrupted run of the kit's own
             db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(probe), fetch=False)
         db.run(sql.create_virtual_schema(probe, script, props), fetch=False)
+        db.run(_comment("SCHEMA", sql.ident(probe)), fetch=False)
+        tables = [r[0] for r in db.run("SELECT TABLE_NAME FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA = %s "
+                                       "ORDER BY TABLE_NAME" % sql.literal(probe))]
+        first = None
+        for t in tables:
+            try:
+                db.run("SELECT * FROM %s.%s LIMIT 1" % (sql.ident(probe), sql.ident(t)))
+                first = None
+                break
+            except sql.SqlError as e:
+                first = first or e
+        if first is not None:
+            raise first
     finally:
         try:
-            db.run("DROP VIRTUAL SCHEMA IF EXISTS %s CASCADE" % sql.ident(probe), fetch=False)
+            if _owned(db.run("SELECT SCHEMA_COMMENT FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s"
+                             % sql.literal(probe))):
+                db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(probe), fetch=False)
         except (sql.SqlError, Fail) as e:
             state.log("WARN", "probe schema %s: %s" % (probe, e))
 
@@ -648,12 +710,22 @@ def _ensure_adapter_schema(ctx):
 def _ensure_adapter_script(ctx, connector, cfg):
     """The adapter script in the kit's schema, in the source's runtime - and
     the companion scripts the adapter calls by name, which must live in the
-    same schema. Idempotent: CREATE OR REPLACE throughout."""
+    same schema. Idempotent: CREATE OR REPLACE throughout - but never over a
+    same-named script someone else made or took over (no kit COMMENT): a
+    name a connector fixes cannot be versioned around such a script."""
     script = cfg["objects"]["script"].split(".", 1)[1]
     bucket = cfg["artifacts"]["bucket"]
     kind = plan.runtime_kind(connector)
     udf = None
     _ensure_adapter_schema(ctx)
+    for name in [script] + [c["name"] for c in connector.get("scripts", [])]:
+        rows = ctx.db.run("SELECT SCRIPT_COMMENT FROM SYS.EXA_ALL_SCRIPTS WHERE SCRIPT_SCHEMA = %s AND "
+                          "SCRIPT_NAME = %s" % (sql.literal(sql.ADAPTER_SCHEMA), sql.literal(name)))
+        if rows and not _owned(rows):
+            raise Fail(2, "The script %s.%s exists and is not the kit's (its comment was changed or it was "
+                          "made by hand); the kit will not replace it." % (sql.ADAPTER_SCHEMA, name), None,
+                       "Drop or rename it, or restore its comment '%s', then run the command again." % sql.MARKER,
+                       "foreign_object")
     if kind == "java":
         jar = "%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["adapter_file"])
         jars = [jar]
@@ -815,6 +887,8 @@ def connect(ctx):
     dry_run = getattr(a, "dry_run", False)
     first_time = saved is None
     with ctx.lock():
+        if not dry_run:
+            _sweep_orphans(ctx)
         facts = gather_facts(ctx, connector, inputs, dry_run=dry_run)
         try:
             p = plan.build_plan(connector, inputs, facts)
@@ -829,7 +903,7 @@ def connect(ctx):
         for k in plan.input_ids(connector):
             cfg[k] = inputs.get(k)
         cfg.update(params=inputs.get("params") or {}, tls=requested_level, objects=p["objects"],
-                   artifacts=artifacts.describe(connector),
+                   artifacts=artifacts.describe(connector, inputs["name"]),
                    created=(saved or {}).get("created") or state.now_iso())
         try:
             result = _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls,
@@ -863,10 +937,16 @@ def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requ
                         "restarts about 30 s). Go ahead?")
         elif facts.get("runtime_conflict"):
             spec = plan.runtime_spec(kind)
-            question = ("The database has the %s runtime %s; %s needs %s. Replacing it restarts the "
-                        "database once, and %s scripts built for the other version stop loading until "
-                        "they are rebuilt. Go ahead?" % (rt, facts["runtime_conflict"], connector["label"],
-                                                         spec["version"], rt))
+            whose = (" that the kit did not install - your own %s scripts built for it stop loading"
+                     % rt if facts.get("runtime_foreign") else "")
+            affected = sorted(f.parent.name for f in state.sources_dir().glob("*/config.json")
+                              if ((state.read_json(f) or {}).get("artifacts") or {}).get("runtime") == kind
+                              and f.parent.name != name_l)
+            question = ("The database has a %s runtime %s%s. %s needs %s; replacing it restarts the "
+                        "database once.%s Go ahead?" % (
+                            rt, facts["runtime_conflict"], whose, connector["label"], spec["version"],
+                            " These sources move to the new runtime with it: %s." % ", ".join(affected)
+                            if affected else ""))
         else:
             question = ("%s runs on the %s runtime, which the kit installs into the database (a pinned, "
                         "verified download). Activating it restarts the database once (about a minute). "
@@ -915,11 +995,33 @@ def _install_runtime(ctx, facts):
     spec = plan.runtime_spec(kind)
     path = artifacts.fetch(spec, ctx.ui)
     ctx.rt.install_custom_slc(spec["alias"], spec["language"], path, update=facts["runtime_installed"])
+    # "pending" until the restart has made it active: a run interrupted in
+    # between finds the restart still owed instead of trusting the record.
     reg = artifacts.load_registry()
     reg["runtimes"][kind] = {"alias": spec["alias"], "version": spec["version"], "file": spec["file"],
-                             "sha256": spec["sha256"], "installed": state.now_iso()}
+                             "sha256": spec["sha256"], "installed": state.now_iso(), "pending": True}
     state.write_json(state.registry_path(), reg)
     ctx.ui.ok("%s runtime %s recorded for the next start" % (plan.RUNTIME_LABELS[kind], spec["version"]))
+
+
+def _runtime_proven(kind):
+    """The custom runtime answered after its restart: no longer pending.
+    (A suspected fingerprint clears only when _install_runtime replaces the
+    runtime, which writes a fresh record.)"""
+    reg = artifacts.load_registry()
+    rec = reg["runtimes"].get(kind)
+    if rec and rec.pop("pending", None):
+        state.write_json(state.registry_path(), reg)
+
+
+def _runtime_suspect(kind):
+    """An adapter of the pinned version did not load in the active runtime
+    (fingerprint mismatch): the next connect replaces the runtime."""
+    if kind in (None, "java", "lua"):
+        return
+    reg = artifacts.load_registry()
+    reg["runtimes"].setdefault(kind, {})["suspect"] = True
+    state.write_json(state.registry_path(), reg)
 
 
 def _ensure_runtime_active(ctx, connector, cfg, first_time=False, quiet=False):
@@ -935,6 +1037,62 @@ def _ensure_runtime_active(ctx, connector, cfg, first_time=False, quiet=False):
     if kind != "lua" and ("%s=" % plan.runtime_spec(kind)["alias"]) not in _script_languages(ctx):
         raise _source_fail(cfg, "slc_missing", None, first_time)
     return "n/a"
+
+
+def _adapter_entry(connector, cfg):
+    return {"bucket": cfg["artifacts"]["bucket"], "script": cfg["objects"]["script"], "connector": connector["id"],
+            "companions": [s["name"] for s in connector.get("scripts", [])]}
+
+
+def _other_versions(reg, akey):
+    """Registry keys of the same connector, other than akey, that some
+    source still references (an entry with no refs is a leftover, not a
+    user)."""
+    cid = akey.split("/")[0]
+    return [k for k, v in reg["adapters"].items() if k != akey and k.split("/")[0] == cid and v.get("refs")]
+
+
+def _move_forward(ctx, connector, cfg):
+    """Move sources to the connector's CURRENT adapter where the adapter is
+    not versioned beside the old one. Connector scope (one fixed-name script
+    for all, a native library): every source of the connector moves at
+    once - re-pointing the script moves them anyway, and a source left on
+    the old record would later point the shared script back at a library
+    the active runtime cannot load. Source scope: just this source. Old
+    versions nobody references any more give up their staged files.
+    Updates cfg in place; other sources' records are rewritten."""
+    scope = plan.adapter_scope(connector)
+    if scope == "version":
+        return
+    reg = artifacts.load_registry()
+    targets = [cfg]
+    if scope == "connector":
+        for f in sorted(state.sources_dir().glob("*/config.json")):
+            other = state.read_json(f)
+            if other and other.get("connector") == connector["id"] and other["name"] != cfg["name"]:
+                targets.append(other)
+    stale = []
+    for c in targets:
+        old = (c.get("artifacts") or {}).get("adapter_key")
+        new = artifacts.describe(connector, c["name"])
+        if old != new["adapter_key"]:
+            c["artifacts"] = dict(c.get("artifacts") or {}, **new)
+            artifacts.add_ref(reg, "adapters", new["adapter_key"], c["name"], _adapter_entry(connector, c))
+            if old:
+                artifacts.drop_ref(reg, "adapters", old, c["name"])
+                stale.append(old)
+            if c is not cfg:
+                state.write_json(state.source_dir(c["name"]) / "config.json", c)
+                ctx.ui.info("Moved %s to %s adapter %s" % (c["objects"]["schema"], connector["label"],
+                                                            new["adapter_version"]))
+    for old in set(stale):
+        entry = reg["adapters"].get(old) or {}
+        if entry.get("refs"):
+            continue
+        if entry.get("bucket") and entry["bucket"] != cfg["artifacts"]["bucket"]:
+            artifacts.remove_bucket_files(ctx.rt.exa_root, entry["bucket"])
+        reg["adapters"].pop(old, None)
+    state.write_json(state.registry_path(), reg)
 
 
 def _stage(ctx, connector, quiet=False):
@@ -968,13 +1126,15 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
         u.ok("Adapter %s verified%s" % (ad["version"], "" if plan.runtime_kind(connector) == "lua" else " and staged"))
     reg = artifacts.load_registry()
     art = cfg["artifacts"]
-    artifacts.add_ref(reg, "adapters", art["adapter_key"], name,
-                      {"bucket": art["bucket"], "script": cfg["objects"]["script"], "connector": connector["id"],
-                       "companions": [s["name"] for s in connector.get("scripts", [])]})
+    # Counted before anything is proven, so a failed first connect can be
+    # rolled back by the usual release; a run KILLED in between leaves a
+    # reference with no source record, which _sweep_orphans takes back.
+    artifacts.add_ref(reg, "adapters", art["adapter_key"], name, _adapter_entry(connector, cfg))
     if drv:
         artifacts.add_ref(reg, "drivers", art["driver_name"], name, {"connector": connector["id"],
                                                                      "file": art["driver_file"]})
     state.write_json(state.registry_path(), reg)
+    _move_forward(ctx, connector, cfg)
 
     if p["restart_needed"]:
         u.info("Restarting the database to activate the %s runtime"
@@ -982,6 +1142,8 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
         took = ctx.rt.restart(ctx.wait_ready, say=u.info)
         u.ok("Database restarted (%ds)" % took)
     dns_state = _ensure_runtime_active(ctx, connector, cfg, first_time)
+    if facts["runtime"] not in ("java", "lua"):
+        _runtime_proven(facts["runtime"])
     # Before any probe: a source without a JDBC side is probed THROUGH its
     # adapter, and every later step needs the script anyway.
     _ensure_adapter_script(ctx, connector, cfg)
@@ -1059,7 +1221,7 @@ def _load(name):
         # Written by the first engine build: it recorded no versions, which
         # were the connector's at the time.
         try:
-            cfg["artifacts"] = artifacts.describe(_connector(cfg))
+            cfg["artifacts"] = artifacts.describe(_connector(cfg), cfg["name"])
         except Fail:
             cfg["artifacts"] = {}
     return cfg, state.read_json(state.source_dir(n) / "state.json", {}) or {}
@@ -1091,8 +1253,22 @@ def _check_runtime(ctx, connector, cfg):
     """What a restart or an outside change can undo, repaired before judging:
     the staged files of THIS source's adapter version, the driver
     registration, the runtime (and, for Java, name resolution) - and then the
-    adapter script, which a probe through the adapter needs."""
-    art, exa = cfg["artifacts"], ctx.rt.exa_root
+    adapter script, which a probe through the adapter needs.
+
+    A source whose adapter is not versioned beside the old one (a shared
+    fixed-name script, or the source's own) and that still records an older
+    version is moved FORWARD: re-creating its script from the old record
+    would point every source of a shared script back at a library the
+    active runtime may no longer load."""
+    exa = ctx.rt.exa_root
+    if plan.adapter_scope(connector) != "version" and \
+            cfg["artifacts"].get("adapter_version") != connector["adapter"]["version"]:
+        _stage(ctx, connector)
+        _move_forward(ctx, connector, cfg)
+        state.write_json(state.source_dir(cfg["name"]) / "config.json", cfg)
+        ctx.ui.info("Moved %s to %s adapter %s" % (cfg["objects"]["schema"], connector["label"],
+                                                    connector["adapter"]["version"]))
+    art = cfg["artifacts"]
     if art.get("adapter_version") == connector["adapter"]["version"]:
         ad = plan.adapter(connector)
         drv = plan.driver(connector)
@@ -1162,6 +1338,7 @@ def reauth(ctx):
     with ctx.lock():
         try:
             dns_state = _check_runtime(ctx, connector, cfg)
+            new["artifacts"] = cfg["artifacts"]  # moved forward, if it was
             host, level, fallback = _establish(ctx, connector, new, names, new["tls"],
                                                net.classify_host(new["host"]), password, dns_state, False)
             new.update(db_host=host, tls=level, ip_fallback=fallback)
@@ -1211,12 +1388,16 @@ def removal_plan(cfg, reg, connector=None):
     references them."""
     name, names, art = cfg["name"], cfg["objects"], cfg.get("artifacts") or {}
     items = [("virtual_schema", names["schema"]), ("connection", names["connection"])]
+    items += [("connection", c) for c in names.get("extra_connections") or []]
     akey = art.get("adapter_key")
     a = reg["adapters"].get(akey, {"refs": []}) if akey else {"refs": [name]}
     if akey and not [r for r in a.get("refs", []) if r != name]:
-        items.append(("adapter_script", a.get("script", names.get("script"))))
+        script = a.get("script", names.get("script"))
+        others = _other_versions(reg, akey)
+        if not [k for k in others if reg["adapters"][k].get("script") == script]:
+            items.append(("adapter_script", script))
         items.append(("bucket_folder", a.get("bucket", art.get("bucket"))))
-        if not [k for k in reg["adapters"] if k != akey and k.split("/")[0] == akey.split("/")[0]]:
+        if not others:
             items += [("script", "%s.%s" % (sql.ADAPTER_SCHEMA, c)) for c in a.get("companions") or []]
     dkey = art.get("driver_name")
     d = reg["drivers"].get(dkey, {"refs": []}) if dkey else {"refs": [name]}
@@ -1248,13 +1429,65 @@ def _drop_script_if_unused(ctx, qualified):
 
 def _drop_companion(ctx, name):
     """Drop one of the kit's companion scripts - only if it carries the kit's
-    COMMENT. Returns True when it was dropped."""
+    COMMENT. Returns 'dropped', 'absent', or 'foreign' (someone took it over;
+    it is kept and said so)."""
     s = ctx.db.run("SELECT SCRIPT_COMMENT FROM SYS.EXA_ALL_SCRIPTS WHERE SCRIPT_SCHEMA = %s AND SCRIPT_NAME = %s"
                    % (sql.literal(sql.ADAPTER_SCHEMA), sql.literal(name)))
+    if not s:
+        return "absent"
     if not _owned(s):
-        return False
+        return "foreign"
     ctx.db.run("DROP SCRIPT %s.%s" % (sql.ident(sql.ADAPTER_SCHEMA), sql.ident(name)), fetch=False)
-    return True
+    return "dropped"
+
+
+def _script_users(ctx, qualified, but=None):
+    """Virtual schemas - anyone's - that use a kit adapter script, except `but`."""
+    schema, script = qualified.split(".", 1)
+    return [r[0] for r in ctx.db.run("SELECT SCHEMA_NAME FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE "
+                                     "ADAPTER_SCRIPT_SCHEMA = %s AND ADAPTER_SCRIPT_NAME = %s"
+                                     % (sql.literal(schema), sql.literal(script))) if r[0] != but]
+
+
+def _sweep_orphans(ctx):
+    """Take back what a KILLED connect left: references in the registry to
+    a source that has no record (its connection - which holds the secret -,
+    its virtual schema, its artifacts), and the kit's staging connections
+    and probe schemas of any source. Runs under the lock, so no other
+    command is half-way through; only kit-COMMENTed objects are dropped."""
+    reg = artifacts.load_registry()
+    refs = {}
+    for kind in ("adapters", "drivers"):
+        for key, entry in reg[kind].items():
+            for r in entry.get("refs") or []:
+                refs.setdefault(r, {})[kind] = key
+    db = ctx.db
+    for name in sorted(refs):
+        names = sql.object_names(name)
+        conns = [names["connection"] + "_NEW", names["connection"] + "_NEW_EXA"]
+        orphan = not (state.source_dir(name) / "config.json").is_file()
+        if orphan:
+            conns += [names["connection"], names["connection"] + "_EXA"]
+        for conn in conns:
+            if _owned(db.run("SELECT CONNECTION_COMMENT FROM SYS.EXA_DBA_CONNECTIONS WHERE CONNECTION_NAME = %s"
+                             % sql.literal(conn))):
+                db.run("DROP CONNECTION %s" % sql.ident(conn), fetch=False)
+                state.log("INFO", "swept leftover connection %s" % conn)
+        schemas = [sql.probe_schema_name(name)] + ([names["schema"]] if orphan else [])
+        for s in schemas:
+            if _owned(db.run("SELECT SCHEMA_COMMENT FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s" % sql.literal(s))):
+                db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(s), fetch=False)
+                state.log("INFO", "swept leftover schema %s" % s)
+        if orphan:
+            akey, dkey = refs[name].get("adapters"), refs[name].get("drivers")
+            entry = reg["adapters"].get(akey) or {}
+            ghost = {"name": name, "connector": entry.get("connector") or (akey or "").split("/")[0],
+                     "objects": dict(names, script=entry.get("script")),
+                     "artifacts": {"adapter_key": akey, "bucket": entry.get("bucket"), "driver_name": dkey,
+                                   "driver_file": (reg["drivers"].get(dkey) or {}).get("file")}}
+            _release_artifacts(ctx, ghost, keep_driver=False)
+            reg = artifacts.load_registry()
+            state.log("INFO", "swept the references of %s, which has no source record" % name)
 
 
 def _release_artifacts(ctx, cfg, keep_driver):
@@ -1268,22 +1501,32 @@ def _release_artifacts(ctx, cfg, keep_driver):
     akey = art.get("adapter_key")
     if akey and artifacts.drop_ref(reg, "adapters", akey, cfg["name"]):
         entry = reg["adapters"][akey]
-        dropped, why = _drop_script_if_unused(ctx, entry.get("script") or cfg["objects"]["script"])
+        script = entry.get("script") or cfg["objects"].get("script")
+        others = _other_versions(reg, akey)
+        # A fixed-name script that another version of the connector now
+        # serves is not this version's to drop - but its files and its
+        # registry entry are.
+        shared = [k for k in others if reg["adapters"][k].get("script") == script]
+        dropped, why = (False, None) if shared or not script else _drop_script_if_unused(ctx, script)
         if why:
-            kept.append({"kind": "adapter_script", "name": entry.get("script"), "reason": why})
+            kept.append({"kind": "adapter_script", "name": script, "reason": why})
         else:
             if dropped:
-                removed.append({"kind": "adapter_script", "name": entry.get("script")})
-            if artifacts.remove_bucket_files(exa, entry.get("bucket") or art["bucket"]):
-                removed.append({"kind": "bucket_folder", "name": entry.get("bucket") or art["bucket"]})
+                removed.append({"kind": "adapter_script", "name": script})
+            bucket = entry.get("bucket") or art.get("bucket")
+            if bucket and artifacts.remove_bucket_files(exa, bucket):
+                removed.append({"kind": "bucket_folder", "name": bucket})
             reg["adapters"].pop(akey, None)
             # Companion scripts have fixed names, shared by every version of
             # the connector's adapter: they go with the last one.
-            same = [k for k in reg["adapters"] if k.split("/")[0] == akey.split("/")[0]]
-            if not same:
+            if not others:
                 for comp in entry.get("companions") or []:
-                    if _drop_companion(ctx, comp):
-                        removed.append({"kind": "script", "name": "%s.%s" % (sql.ADAPTER_SCHEMA, comp)})
+                    outcome = _drop_companion(ctx, comp)
+                    qualified = "%s.%s" % (sql.ADAPTER_SCHEMA, comp)
+                    if outcome == "dropped":
+                        removed.append({"kind": "script", "name": qualified})
+                    elif outcome == "foreign":
+                        kept.append({"kind": "script", "name": qualified, "reason": "not the kit's any more"})
     dkey = art.get("driver_name")
     if dkey and not keep_driver and artifacts.drop_ref(reg, "drivers", dkey, cfg["name"]):
         users = [k for k, v in reg["adapters"].items() if k.split("/")[0] == cfg["connector"] and v.get("refs")]
@@ -1324,14 +1567,30 @@ def remove(ctx):
     cfg, _ = _load(ctx.args.name)
     u = ctx.ui
     with ctx.lock():
+        dry = getattr(ctx.args, "dry_run", False)
+        if not dry:
+            _sweep_orphans(ctx)
         reg = artifacts.load_registry()
         items = removal_plan(cfg, reg)
+        # The registry knows the kit's sources; only the database knows a
+        # virtual schema someone made by hand on the kit's adapter - which
+        # keeps the adapter and everything that goes with it.
+        would_keep = []
+        script_items = [w for k, w in items if k == "adapter_script"]
+        users = _script_users(ctx, script_items[0], but=cfg["objects"]["schema"]) if script_items else []
+        if users:
+            reason = "still used by %s" % ", ".join(users)
+            would_keep = [{"kind": k, "name": w, "reason": reason} for k, w in items
+                          if k in ("adapter_script", "bucket_folder", "script")]
+            items = [(k, w) for k, w in items if k not in ("adapter_script", "bucket_folder", "script")]
         u.step("Removing %s" % cfg["objects"]["schema"])
         for kind, what in items:
             u.info("%s: %s" % (kind.replace("_", " "), what))
-        if getattr(ctx.args, "dry_run", False):
+        for k in would_keep:
+            u.info("kept: %s %s (%s)" % (k["kind"].replace("_", " "), k["name"], k["reason"]))
+        if dry:
             return 0, {"ok": True, "status": "planned", "dry_run": True,
-                       "would_remove": [{"kind": k, "name": w} for k, w in items],
+                       "would_remove": [{"kind": k, "name": w} for k, w in items], "would_keep": would_keep,
                        "remedy": None, "remedy_hint": None}
         if not getattr(ctx.args, "yes", False):
             again = "exakit source remove %s --yes" % cfg["name"].lower()
@@ -1407,7 +1666,7 @@ def show(ctx):
     # Connectors differ in what they ask (Exasol has no database, Snowflake a
     # warehouse), so the line lists what this source actually has.
     detail = ", ".join("%s %s" % (k, cfg[k]) for k in ("database", "warehouse", "schema", "role", "namespace",
-                                                        "collection", "catalog") if cfg.get(k))
+                                                        "collection", "catalog", "endpoint") if cfg.get(k))
     ctx.ui.panel("Source %s" % cfg["name"].lower(), [
         ("Source", "%s (%s:%s%s)" % (cfg["connector"], cfg["host"], cfg["port"], ", " + detail if detail else "")),
         ("Reached as", reached),
