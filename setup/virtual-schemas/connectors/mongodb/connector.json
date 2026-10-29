@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "id": "mongodb",
+  "label": "MongoDB",
+  "aliases": ["mongo"],
+  "runtime": "rust",
+  "adapter": {
+    "repo": "exasol-labs/exasol-mongodb-vs",
+    "version": "0.1.3",
+    "license": "MIT",
+    "runtime_version": "0.33.0",
+    "script_name": "MONGODB_ADAPTER",
+    "assets": {
+      "x86_64": {
+        "file": "exasol-mongodb-vs-0.1.3-linux-x86_64.so",
+        "url": "https://github.com/exasol-labs/exasol-mongodb-vs/releases/download/v0.1.3/exasol-mongodb-vs-0.1.3-linux-x86_64.so",
+        "sha256": "d619dcc5b4b35fc1520af8922eea07ba2ec504c70d5c4ee7142ce22289420827"
+      },
+      "aarch64": {
+        "file": "exasol-mongodb-vs-0.1.3-linux-aarch64.so",
+        "url": "https://github.com/exasol-labs/exasol-mongodb-vs/releases/download/v0.1.3/exasol-mongodb-vs-0.1.3-linux-aarch64.so",
+        "sha256": "fc42e8f6ea490429409b09d8b203db9a7446b0c7a69b03c03c85ef30dcc1da37"
+      }
+    }
+  },
+  "driver": null,
+  "scripts": [
+    {"name": "MONGODB_SCAN",
+     "sql": "CREATE OR REPLACE RUST SCALAR SCRIPT {schema}.MONGODB_SCAN(spec VARCHAR(2000000))\nEMITS (...) AS\n%udf_object {udf_object}\n/"}
+  ],
+  "url": {
+    "scheme": "mongodb://",
+    "alt_schemes": ["mongodb+srv://"],
+    "default_port": 27017,
+    "allowed_params": ["authSource", "replicaSet", "readPreference", "appName", "directConnection",
+                       "retryReads", "connectTimeoutMS", "serverSelectionTimeoutMS", "tls", "ssl"],
+    "secret_params": ["password", "tlsCertificateKeyFilePassword"]
+  },
+  "inputs": [
+    {"id": "host", "label": "Host", "required": true, "example": "mongo.example.com"},
+    {"id": "port", "label": "Port", "type": "port", "default": 27017},
+    {"id": "auth_source", "label": "Authentication database (authSource)", "default": "admin"},
+    {"id": "user", "label": "User", "required": true},
+    {"id": "password", "label": "Password", "secret": true, "required": true},
+    {"id": "database", "label": "Database", "required": true, "connection": false},
+    {"id": "collection", "label": "Collection", "required": true, "connection": false}
+  ],
+  "properties": {},
+  "tls": {
+    "param": "tls",
+    "default": "verify",
+    "levels": {
+      "verify": {"params": {"tls": "true"}},
+      "none": {"params": {"tls": "false"}}
+    },
+    "from_url": {"true": "verify", "false": "none"}
+  },
+  "check": {"kind": "vs"},
+  "failures": [
+    {"pattern": "MongoDB error while reading collection metadata", "kind": "login_or_connection"}
+  ],
+  "messages": {
+    "login_or_connection": {"message": "MongoDB refused the connection or the login (the adapter does not say which).",
+                            "hint": "Check, in this order: the user ({user}) and its password, and that it is defined in the authentication database ({auth_source}); TLS - a MongoDB on this machine or a private network without TLS needs --tls none, one with TLS needs a certificate from a public authority; and that {host}:{port} answers from inside the database container."},
+    "auth": {"message": "MongoDB refused the user name or password.",
+             "hint": "Check the user ({user}), its password, and the authentication database ({auth_source}): the user must be defined there and be allowed to read {database}."},
+    "permission": {"message": "User {user} may not read {database}.{collection}.",
+                   "hint": "Grant the user the read role on {database}, then: exakit source check {name|lower}"}
+  },
+  "notes": [
+    "One collection is one virtual schema: the documents form a root table (the MongoDB _id is mongo_id), a nested object becomes a child table joined on root.\"<field>|object\" = child.\"_id\", and an array becomes <ROOT>_<field>_arr joined on \"_parent\" = root.\"_id\" (position \"_pos\", value \"_value\").",
+    "Child tables and fields keep their MongoDB spelling: quote them, e.g. VS_X.\"PEOPLE_profile\".\"city\".",
+    "Columns are inferred from a sample of up to 100 documents; after the collection's shape changes, run: exakit source refresh <name>.",
+    "Filters, projections, LIMIT and aggregates run in MongoDB; nothing is copied into Exasol."
+  ]
+}

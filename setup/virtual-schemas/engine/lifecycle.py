@@ -19,6 +19,7 @@ Rules every command here keeps:
 """
 
 import os
+import re
 import sys
 import time
 
@@ -124,6 +125,14 @@ def _source_fail(cfg, kind, err, first_time=False):
     if kind == "network" and cfg.get("host") and not net.is_ip(cfg["host"]) and \
             net.classify_host(cfg["host"]) != "loopback" and not net.resolve_here(cfg["host"]):
         kind = "unresolvable"
+    if kind == "unknown":
+        # An adapter's own wording the generic patterns cannot know (MongoDB
+        # reports a refused login and a TLS mismatch with the same line).
+        text = str(err or "")
+        for f in (_connector_or_none(cfg) or {}).get("failures", []):
+            if re.search(f["pattern"], text, re.I):
+                kind = f["kind"]
+                break
     if kind == "runtime_mismatch":
         _runtime_suspect(runtime_kind)
     msg, remedy, hint = explain(kind, cfg, detail, first_time)
@@ -460,7 +469,9 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
                 continue
             if not f.get("required"):
                 continue
-            raise Fail(2, "%s is required: set %s (or EXAKIT_VS_JDBC_URL)" % (f["label"], env))
+            in_url = f["id"] in ("host", "port", "database", "user", "auth_source", "path")
+            raise Fail(2, "%s is required: set %s%s" % (f["label"], env,
+                                                        " (or EXAKIT_VS_JDBC_URL)" if in_url else ""))
         answer = u.ask(f["label"] + ("" if f.get("required") else " (optional)"), str(f.get("default") or ""))
         if answer:
             inputs[f["id"]] = answer
@@ -1060,11 +1071,14 @@ def _move_forward(ctx, connector, cfg):
     the old record would later point the shared script back at a library
     the active runtime cannot load. Source scope: just this source. Old
     versions nobody references any more give up their staged files.
-    Updates cfg in place; other sources' records are rewritten."""
+    Updates cfg in place; other sources' records are rewritten. Returns the
+    virtual schemas that moved: an adapter's stored notes are versioned, so
+    they need a REFRESH once the script points at the new library."""
     scope = plan.adapter_scope(connector)
     if scope == "version":
-        return
+        return []
     reg = artifacts.load_registry()
+    moved = []
     targets = [cfg]
     if scope == "connector":
         for f in sorted(state.sources_dir().glob("*/config.json")):
@@ -1077,6 +1091,7 @@ def _move_forward(ctx, connector, cfg):
         new = artifacts.describe(connector, c["name"])
         if old != new["adapter_key"]:
             c["artifacts"] = dict(c.get("artifacts") or {}, **new)
+            moved.append(c["objects"]["schema"])
             artifacts.add_ref(reg, "adapters", new["adapter_key"], c["name"], _adapter_entry(connector, c))
             if old:
                 artifacts.drop_ref(reg, "adapters", old, c["name"])
@@ -1093,6 +1108,22 @@ def _move_forward(ctx, connector, cfg):
             artifacts.remove_bucket_files(ctx.rt.exa_root, entry["bucket"])
         reg["adapters"].pop(old, None)
     state.write_json(state.registry_path(), reg)
+    return moved
+
+
+def _refresh_moved(ctx, schemas):
+    """REFRESH the kit's virtual schemas that moved to a new adapter version.
+    One that does not refresh (its own source is down) is said, not fatal:
+    its own `source check` repairs it later."""
+    for s in schemas:
+        if not _owned(ctx.db.run("SELECT SCHEMA_COMMENT FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s"
+                                 % sql.literal(s))):
+            continue
+        try:
+            ctx.db.run("ALTER VIRTUAL SCHEMA %s REFRESH" % sql.ident(s), fetch=False)
+        except sql.SqlError as e:
+            ctx.ui.warn("%s moved to the new adapter but did not refresh (%s); its source check repairs it."
+                        % (s, sql.short(str(e))))
 
 
 def _stage(ctx, connector, quiet=False):
@@ -1134,7 +1165,7 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
         artifacts.add_ref(reg, "drivers", art["driver_name"], name, {"connector": connector["id"],
                                                                      "file": art["driver_file"]})
     state.write_json(state.registry_path(), reg)
-    _move_forward(ctx, connector, cfg)
+    moved = _move_forward(ctx, connector, cfg)
 
     if p["restart_needed"]:
         u.info("Restarting the database to activate the %s runtime"
@@ -1147,6 +1178,8 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
     # Before any probe: a source without a JDBC side is probed THROUGH its
     # adapter, and every later step needs the script anyway.
     _ensure_adapter_script(ctx, connector, cfg)
+    # This source's own schema is refreshed below; the others that moved now.
+    _refresh_moved(ctx, [s for s in moved if s != cfg["objects"]["schema"]])
 
     if password is None:
         try:
@@ -1261,10 +1294,11 @@ def _check_runtime(ctx, connector, cfg):
     would point every source of a shared script back at a library the
     active runtime may no longer load."""
     exa = ctx.rt.exa_root
+    moved = []
     if plan.adapter_scope(connector) != "version" and \
             cfg["artifacts"].get("adapter_version") != connector["adapter"]["version"]:
         _stage(ctx, connector)
-        _move_forward(ctx, connector, cfg)
+        moved = _move_forward(ctx, connector, cfg)
         state.write_json(state.source_dir(cfg["name"]) / "config.json", cfg)
         ctx.ui.info("Moved %s to %s adapter %s" % (cfg["objects"]["schema"], connector["label"],
                                                     connector["adapter"]["version"]))
@@ -1285,6 +1319,7 @@ def _check_runtime(ctx, connector, cfg):
             _connect_cmd(cfg), "Connecting again moves the source to the current adapter.", "upgrade_needed")
     st = _ensure_runtime_active(ctx, connector, cfg)
     _ensure_adapter_script(ctx, connector, cfg)
+    _refresh_moved(ctx, moved)
     return st
 
 

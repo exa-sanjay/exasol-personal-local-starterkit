@@ -450,7 +450,7 @@ class Connectors(unittest.TestCase):
 
     def test_all_present(self):
         self.assertEqual(sorted(plan.load_connectors()),
-                         ["exasol", "lakehouse", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
+                         ["exasol", "lakehouse", "mongodb", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
 
 
 CS = plan.load_connectors()
@@ -825,6 +825,44 @@ class Lakehouse(unittest.TestCase):
         self.assertNotIn("dns", steps)
         self.assertFalse(p["restart_needed"])
         self.assertEqual(p["objects"]["script"], "EXAKIT_VS.LAKEHOUSE_ADAPTER")
+
+
+class MongoDB(unittest.TestCase):
+    MG = CS["mongodb"]
+    BASE = {"name": "PEOPLE", "host": "mongo.example.com", "port": 27017, "auth_source": "admin",
+            "user": "reader", "database": "shop", "collection": "people"}
+
+    def test_url(self):
+        f, notes = plan.parse_url(self.MG, "mongodb://reader:s3cretZZ@db.example.com:27018/shop?authSource=users"
+                                           "&replicaSet=rs0&tls=true")
+        self.assertEqual((f["host"], f["port"], f["database"], f["user"], f["auth_source"]),
+                         ("db.example.com", 27018, "shop", "reader", "users"))
+        self.assertNotIn("s3cretZZ", json.dumps(f))
+        self.assertIn("password_stripped", [n[0] for n in notes])
+        merged = plan.merge_url(self.MG, {"url": "mongodb://db.example.com/shop?tls=false"}, [])
+        self.assertEqual(merged["tls"], "none")
+        srv = plan.merge_url(self.MG, {"url": "mongodb+srv://cluster0.ab12.mongodb.net/shop"}, [])
+        self.assertEqual((srv["tls"], srv["params"]), ("verify", {"srv": "true"}))
+
+    def test_build_url(self):
+        self.assertEqual(plan.build_url(self.MG, "host.containers.internal", self.BASE, "none"),
+                         "mongodb://host.containers.internal:27017/?authSource=admin&tls=false")
+        srv = dict(self.BASE, params={"srv": "true", "replicaSet": "rs0"})
+        self.assertEqual(plan.build_url(self.MG, "cluster0.ab12.mongodb.net", srv, "verify"),
+                         "mongodb+srv://cluster0.ab12.mongodb.net/?authSource=admin&replicaSet=rs0&tls=true")
+
+    def test_properties_and_plan(self):
+        self.assertEqual(plan.vs_properties(self.MG, {"connection": "C"}, self.BASE),
+                         {"MONGODB_CONNECTION": "C", "DATABASE": "shop", "COLLECTION": "people"})
+        self.assertEqual(plan.script_name(self.MG, "PEOPLE"), "MONGODB_ADAPTER")
+        # Database and collection are virtual-schema properties: changing one
+        # does not rebuild the connection (no password needed).
+        saved = dict(self.BASE, tls="verify", params={})
+        self.assertEqual(plan.changed_fields(self.MG, saved, dict(saved, collection="orders"), "verify"), [])
+        p = plan.build_plan(self.MG, self.BASE, {"runtime": "rust", "runtime_installed": True,
+                                                  "runtime_active": True})
+        self.assertFalse(p["restart_needed"])
+        self.assertIn("MONGODB_SCAN", [s for s in p["steps"] if s["step"] == "script"][0]["action"])
 
 
 class UiTwin(unittest.TestCase):
