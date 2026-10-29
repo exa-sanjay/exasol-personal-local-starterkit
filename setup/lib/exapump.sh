@@ -3563,7 +3563,7 @@ exakit_data_table_build() {
     # a load, but it answers the same question this screen asks: how do I get my
     # data in front of Exasol. The installer does not offer it.
     if [ "${EXAKIT_DATA_LOAD_OFFER_CONNECT:-0}" = 1 ]; then
-        printf 'plain|An external database, queried live (PostgreSQL, MySQL, SQL Server, Oracle, Exasol)|0|idle|||||| \n' >> "$_dtb_f"
+        printf 'plain|An external source, queried live (databases, MongoDB, Iceberg / Unity Catalog)|0|idle|||||| \n' >> "$_dtb_f"
         EXAKIT_TABLE_IDS="${EXAKIT_TABLE_IDS}connect
 "
         _dtb_n=$(( _dtb_n + 1 ))

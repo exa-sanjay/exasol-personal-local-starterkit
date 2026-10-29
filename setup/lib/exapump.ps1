@@ -3536,7 +3536,7 @@ function New-ExakitDataTable {
     # live as a virtual schema (exakit connect). Twin of the same row in
     # exakit_data_table_build; the installer does not offer it.
     if ($OfferConnect) {
-        [void](Add-ExakitTableRow -Kind "plain" -Label "An external database, queried live (PostgreSQL, MySQL, SQL Server, Oracle, Exasol)")
+        [void](Add-ExakitTableRow -Kind "plain" -Label "An external source, queried live (databases, MongoDB, Iceberg / Unity Catalog)")
         [void]$ids.Add("connect")
     }
     [void](Add-ExakitTableRow -Kind "plain" -Label $FinalLabel)

@@ -3,7 +3,7 @@
   "id": "virtual-schemas",
   "kind": "component",
   "title": "Virtual Schemas",
-  "tagline": "Query an external database (PostgreSQL, MySQL, SQL Server, Oracle, Exasol) from Exasol, live, without loading it.",
+  "tagline": "Query an external database or lakehouse (PostgreSQL, MySQL, SQL Server, Oracle, Exasol, MongoDB, Iceberg / Unity Catalog) from Exasol, live, without loading it.",
   "role": "Part of the kit. A virtual schema makes the tables of another database appear in Exasol as VS_<NAME>: every query reads the source live, nothing is copied. exakit connect does all of the setup - adapter and JDBC driver downloaded and checksum-verified, staged where the database reads them, the database's Java runtime installed (one restart, asked first), the CONNECTION, adapter script and virtual schema created - and calls it ready only after rows came back.",
   "repo": "exasol/virtual-schemas",
   "docs": "https://github.com/exasol/virtual-schemas#readme",
@@ -75,7 +75,7 @@
   "environment": [
     {
       "name": "EXAKIT_VS_SOURCE",
-      "effect": "The source type for a run without a terminal: postgresql (pg), mysql, sqlserver (mssql), oracle, exasol."
+      "effect": "The source type for a run without a terminal: postgresql (pg), mysql, sqlserver (mssql), oracle, exasol, mongodb (mongo), lakehouse (iceberg, unity)."
     },
     {
       "name": "EXAKIT_VS_NAME",
@@ -94,8 +94,8 @@
       "effect": "The source user, and the source schema to expose."
     },
     {
-      "name": "EXAKIT_VS_WAREHOUSE, EXAKIT_VS_ROLE (and EXAKIT_VS_<FIELD> for any connector field)",
-      "effect": "Connector-specific answers, e.g. Snowflake's warehouse and role."
+      "name": "EXAKIT_VS_<FIELD>",
+      "effect": "Connector-specific answers. MongoDB: EXAKIT_VS_COLLECTION, EXAKIT_VS_AUTH_SOURCE. Lakehouse: EXAKIT_VS_NAMESPACE, EXAKIT_VS_CATALOG (iceberg or unity), EXAKIT_VS_WAREHOUSE, EXAKIT_VS_ENDPOINT, EXAKIT_VS_REGION. Databricks: EXAKIT_VS_HTTP_PATH, EXAKIT_VS_CATALOG. Snowflake: EXAKIT_VS_WAREHOUSE, EXAKIT_VS_ROLE."
     },
     {
       "name": "EXAKIT_VS_PASSWORD_FILE",
@@ -107,7 +107,7 @@
     },
     {
       "name": "EXAKIT_CONFIRM_RUNTIME_UPDATE",
-      "effect": "1 (or --yes) consents to the one database restart the Java runtime needs."
+      "effect": "1 (or --yes) consents to the one restart a missing runtime needs (Java, or the Rust runtime for MongoDB and the lakehouse), or replacing a Rust runtime of another version."
     },
     {
       "name": "EXAKIT_VS_DNS_WORKAROUND",
@@ -115,16 +115,17 @@
     },
     {
       "name": "EXAKIT_VS_ALLOW_UNAVAILABLE",
-      "effect": "1 lets you try a source marked unavailable (Snowflake) - for checking whether a newer Exasol Personal has fixed what blocks it."
+      "effect": "1 lets you try a source marked unavailable (Databricks, Snowflake) - for checking whether it works on your setup or a newer Exasol Personal."
     }
   ],
   "notes": [
     "Every virtual schema is readable by the MCP read-only user, so your AI clients can see the source's data the moment it is connected.",
     "The password lives only in the database's CONNECTION object. The kit's admin user can still read it back through a script, as the owner of any Exasol connection can - use a read-only account on the source.",
-    "Sources and TLS: PostgreSQL, MySQL and SQL Server are encrypted without verifying the server's certificate (Exasol Personal's import process has no trust store yet); Oracle uses Native Network Encryption; another Exasol is verified by its certificate fingerprint. Snowflake is not available yet: its driver must verify certificates. An unencrypted link is offered only for hosts on this machine or a private network.",
+    "Sources and TLS: PostgreSQL, MySQL and SQL Server are encrypted without verifying the server's certificate (Exasol Personal's import process has no trust store yet); Oracle uses Native Network Encryption; another Exasol is verified by its certificate fingerprint; MongoDB and the lakehouse (native Rust adapters) verify certificates against public CAs. Databricks is built but unavailable until a live workspace proves its row path; Snowflake is unavailable because its driver must verify certificates. An unencrypted link is offered only for hosts on this machine or a private network.",
     "Host names: Exasol Personal's Java runtime ships without name resolution. The kit links it in after every database start (the database's boot entry runs exakit start database for that); EXAKIT_VS_DNS_WORKAROUND=0 turns this off and the kit uses IP addresses instead.",
     "localhost inside the database is the database itself. A source on this computer is reached through the container's host address, which exakit connect works out for you.",
-    "MySQL's driver (Connector/J) is GPL software the kit downloads onto this machine only."
+    "MySQL's driver (Connector/J) is GPL software the kit downloads onto this machine only.",
+    "MongoDB and the lakehouse run on a Rust runtime the kit installs once from a pinned, verified download (one restart). Each Rust adapter release loads only in the runtime version it was built for; the kit keeps the connectors and that pin in step."
   ],
   "troubleshooting": [
     {

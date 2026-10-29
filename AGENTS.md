@@ -172,7 +172,7 @@ What an agent needs to know:
 
 ## External databases as virtual schemas (core, nothing to install)
 
-`exakit connect` makes another database readable from the local one as a virtual schema `VS_<NAME>`. Every query reads the source live; nothing is copied. Sources: `postgresql` (`pg`), `mysql`, `sqlserver` (`mssql`), `oracle`, `exasol`. `snowflake` is listed but refused as unavailable, because its driver must verify certificates. Without a terminal, answer with flags or env vars. **The password only ever comes from a file or stdin. There is no `--password` option, and a password inside a pasted URL is removed and never used.**
+`exakit connect` makes another database readable from the local one as a virtual schema `VS_<NAME>`. Every query reads the source live; nothing is copied. Sources: `postgresql` (`pg`), `mysql`, `sqlserver` (`mssql`), `oracle`, `exasol` (Java runtime); `mongodb` (`mongo`) and `lakehouse` (`iceberg`, `unity`: an Iceberg REST catalog or a Unity Catalog) (Rust runtime). `databricks` and `snowflake` are listed but refused as unavailable: Databricks until a live workspace proves its row path, Snowflake because its driver must verify certificates. Without a terminal, answer with flags or env vars. **The password only ever comes from a file or stdin. There is no `--password` option, and a password inside a pasted URL is removed and never used.**
 
 ```bash
 exakit connect postgresql --name sales --url jdbc:postgresql://db.example.com:5432/shop \
@@ -188,15 +188,16 @@ exakit source remove sales --dry-run         # then --yes; only objects the kit 
 | `EXAKIT_VS_SOURCE`, `EXAKIT_VS_NAME` | Source type and name (the schema becomes `VS_<NAME>`) |
 | `EXAKIT_VS_JDBC_URL` | The connection as a JDBC URL (or a `postgres://` URI); a password in it is removed |
 | `EXAKIT_VS_HOST`, `EXAKIT_VS_PORT`, `EXAKIT_VS_DATABASE` | The connection as fields instead of a URL |
-| `EXAKIT_VS_USER`, `EXAKIT_VS_SCHEMA` | Source user and the schema to expose (`EXAKIT_VS_<FIELD>` for any other connector field, e.g. `EXAKIT_VS_WAREHOUSE`) |
+| `EXAKIT_VS_USER`, `EXAKIT_VS_SCHEMA` | Source user and the schema to expose |
+| `EXAKIT_VS_<FIELD>` | Any other connector field. MongoDB: `EXAKIT_VS_COLLECTION` (one collection per source), `EXAKIT_VS_AUTH_SOURCE` (default `admin`). Lakehouse: `EXAKIT_VS_NAMESPACE`, `EXAKIT_VS_CATALOG=iceberg\|unity`, `EXAKIT_VS_WAREHOUSE` (Iceberg), `EXAKIT_VS_ENDPOINT` (S3-compatible storage), `EXAKIT_VS_REGION`; `--user` is the S3 access key and the password file holds its secret key, or a catalog token when `--user` is left out. Databricks: `EXAKIT_VS_HTTP_PATH`, `EXAKIT_VS_CATALOG` |
 | `EXAKIT_VS_PASSWORD_FILE` | File holding the source password (UTF-8 or UTF-16) |
-| `EXAKIT_VS_TLS=verify\|encrypt\|none` | Default is the strongest the source allows: `verify` for Exasol (certificate fingerprint), `encrypt` for the rest (not certificate-verified: Exasol Personal has no trust store for imports yet); Oracle's `encrypt` is Native Network Encryption. `none` only for a host on this machine or a private network |
-| `EXAKIT_CONFIRM_RUNTIME_UPDATE=1` | Consent (like `--yes`) to the one database restart the first connect needs when the Java runtime is missing. Without it and without a terminal, connect exits `5` and changes nothing |
+| `EXAKIT_VS_TLS=verify\|encrypt\|none` | Default is the strongest the source allows: `verify` for Exasol (certificate fingerprint), MongoDB and the lakehouse (CA-verified), `encrypt` for the JDBC sources (not certificate-verified: Exasol Personal has no trust store for imports yet); Oracle's `encrypt` is Native Network Encryption. `none` only for a host on this machine or a private network |
+| `EXAKIT_CONFIRM_RUNTIME_UPDATE=1` | Consent (like `--yes`) to the one database restart the first connect needs when its runtime is missing (Java, or the Rust runtime for MongoDB and the lakehouse) or a Rust runtime of another version has to be replaced. Without it and without a terminal, connect exits `5` and changes nothing |
 | `EXAKIT_VS_DNS_WORKAROUND=0` | Do not link name resolution into the Java sandbox after each start; sources given by host name then fail, give an IP |
 
-- Exit codes: `0` ready · `1` the source could not be reached or read (`--json` carries `kind`, e.g. `network`, `auth`, `tls`, `schema_missing`, and a `remedy`) · `2` bad input · `3` database not running · `4` not installed · `5` restart not confirmed.
+- Exit codes: `0` ready · `1` the source could not be reached or read (`--json` carries `kind`, e.g. `network`, `auth`, `tls`, `schema_missing`, `login_or_connection` (MongoDB does not say which), `pin_mismatch` (Databricks renewed its certificate: connect again), `runtime_mismatch`, and a `remedy`) · `2` bad input · `3` database not running · `4` not installed · `5` restart not confirmed.
 - A host of `localhost` means **this machine**: the kit connects through the database container's host alias. For an `exasol` source it means this database itself. Any other host must be reachable from the database container, not only from your shell.
-- The new schema is readable by the MCP read-only user at once. Quote mixed-case source names as they are: `SELECT * FROM "VS_SALES"."orders"`.
+- The new schema is readable by the MCP read-only user at once. Quote mixed-case source names as they are: `SELECT * FROM "VS_SALES"."orders"`. Lakehouse tables and columns arrive upper-cased; MongoDB child tables keep their spelling (`VS_X."PEOPLE_profile"`) and the connect output's notes say how they join.
 - Never drop `VS_*` schemas, `EXAKIT_SRC_*` connections or the `EXAKIT_VS` schema by hand; use `exakit source remove`.
 
 ## Marketplace add-ons (optional)

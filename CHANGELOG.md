@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-**`exakit connect`: query an external database live, as a virtual schema.**
-PostgreSQL, MySQL, SQL Server, Oracle and another Exasol (or a schema of this
-one) become readable from the local database as `VS_<NAME>`, with nothing
-copied. It is a core part of the kit on macOS, Linux, WSL and Windows, not a
+**`exakit connect`: query an external database or a lakehouse live, as a
+virtual schema.** PostgreSQL, MySQL, SQL Server, Oracle, another Exasol (or a
+schema of this one), a MongoDB collection, and Iceberg or Delta tables behind an
+Iceberg REST catalog or a Unity Catalog become readable from the local database
+as `VS_<NAME>`, with nothing copied. It is a core part of the kit on macOS, Linux, WSL and Windows, not a
 marketplace add-on.
 
 - `exakit connect [<source>]` asks for the details (or takes a pasted JDBC
@@ -34,11 +35,33 @@ marketplace add-on.
   `exakit start database`) re-links name resolution into the Java sandbox,
   so a source can be given by host name (workaround for Exasol Personal's
   script-language container; `EXAKIT_VS_DNS_WORKAROUND=0` turns it off).
-- `exakit data-load` offers "An external database, queried live" as a row
+- **MongoDB** (`exakit connect mongodb`) and the **lakehouse** (`exakit connect
+  lakehouse`: Iceberg REST, or Unity Catalog incl. Databricks) run on native
+  Rust adapters from exasol-labs. Their runtime is a pinned, verified custom
+  Rust SLC (`setup/virtual-schemas/runtimes.json`, installed once with one
+  restart after asking); every Rust adapter release loads only in the exact
+  runtime version it was built for, so the connectors and that pin move
+  together, which a test enforces. Their TLS is verified against public CAs.
+  MongoDB maps a collection to a root table plus child tables for nested
+  objects and arrays. The lakehouse keeps storage keys or a catalog token in
+  the CONNECTION as a JSON document the kit builds from the answers.
+- **Databricks** (`exakit connect databricks`) is built but unavailable
+  until a live workspace proves its row path. Its Lua adapter's HTTPS calls
+  are pinned: the kit reads the workspace certificate from this machine with
+  full verification and patches the adapter to accept exactly that
+  certificate, closing the upstream gap where certificate checks are off.
+- Adapter upgrades: a shared native adapter moves all of its sources to a
+  new version together and refreshes their virtual schemas; a stale record is
+  moved forward rather than pointing the shared script back at an old
+  library. Leftovers of an interrupted connect are swept before the next
+  connect or remove.
+- `exakit data-load` offers "An external source, queried live" as a row
   of its menu, which opens the same wizard.
 - Unattended: `EXAKIT_VS_SOURCE`, `EXAKIT_VS_NAME`, `EXAKIT_VS_JDBC_URL` (or
   `_HOST` / `_PORT` / `_DATABASE`), `EXAKIT_VS_USER`, `EXAKIT_VS_SCHEMA`,
-  `EXAKIT_VS_PASSWORD_FILE`, `EXAKIT_VS_TLS`; `--json` answers one object with
+  `EXAKIT_VS_PASSWORD_FILE`, `EXAKIT_VS_TLS`, and per source
+  `EXAKIT_VS_<FIELD>` (`_COLLECTION`, `_NAMESPACE`, `_WAREHOUSE`, `_ENDPOINT`,
+  `_CATALOG`, `_HTTP_PATH`, ...); `--json` answers one object with
   `remedy` and `remedy_hint`; exit codes follow AGENTS.md.
 - New skill `exasol-virtual-schemas` (skills 1.13.0).
 

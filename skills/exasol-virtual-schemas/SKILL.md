@@ -1,6 +1,6 @@
 ---
 name: exasol-virtual-schemas
-description: Query an external database (PostgreSQL, MySQL, SQL Server, Oracle, another Exasol) from the local Exasol database without loading it, through a virtual schema the starter kit sets up with `exakit connect` — covering the unattended connect (env vars, password file, consent for the one restart), the source lifecycle (`exakit source list|show|check|reauth|refresh|remove`), why names need double quotes, the TLS and host-name limits of Exasol Personal, and the fact that every virtual schema is visible to AI clients over MCP. Triggers — "connect my Postgres to Exasol", "connect MySQL", "connect SQL Server", "connect Oracle", "query an external database", "virtual schema", "exakit connect", "join PostgreSQL data with Exasol", "federated query", "remote database in Exasol", "source check failed", "reauth a connection", "remove a connected source".
+description: Query an external database or lakehouse (PostgreSQL, MySQL, SQL Server, Oracle, another Exasol, MongoDB, Iceberg or Unity Catalog tables) from the local Exasol database without loading it, through a virtual schema the starter kit sets up with `exakit connect` — covering the unattended connect (env vars, password file, consent for the one restart), the source lifecycle (`exakit source list|show|check|reauth|refresh|remove`), why names need double quotes, the TLS and host-name limits of Exasol Personal, and the fact that every virtual schema is visible to AI clients over MCP. Triggers — "connect my Postgres to Exasol", "connect MySQL", "connect SQL Server", "connect Oracle", "connect MongoDB", "query Iceberg tables", "connect a lakehouse", "Unity Catalog", "Databricks", "query an external database", "virtual schema", "exakit connect", "join PostgreSQL data with Exasol", "federated query", "remote database in Exasol", "source check failed", "reauth a connection", "remove a connected source".
 ---
 
 # Virtual Schemas — query another database from Exasol
@@ -9,7 +9,10 @@ Virtual schemas are **part of the kit** - there is nothing to install. They
 make the tables of an external database appear in the local Exasol as
 `VS_<NAME>`: every query reads the source **live**, nothing is copied.
 Supported: **PostgreSQL, MySQL, SQL Server, Oracle** and **Exasol** (another
-Exasol, or a schema of this one). **Snowflake** is not available yet (see below).
+Exasol, or a schema of this one) on the Java runtime; **MongoDB** and the
+**lakehouse** (Iceberg REST catalog, or Unity Catalog incl. Databricks) on a
+pinned Rust runtime. **Databricks** (its own connector) and **Snowflake** are
+not available yet (see below).
 
 | Source | `exakit connect <type>` | TLS on Exasol Personal |
 |---|---|---|
@@ -18,11 +21,14 @@ Exasol, or a schema of this one). **Snowflake** is not available yet (see below)
 | SQL Server | `sqlserver` (`mssql`) | encrypted, not verified (`trustServerCertificate=true`) |
 | Oracle | `oracle` | Oracle Native Network Encryption (TCPS not possible yet) |
 | Exasol | `exasol` | **verified** - the certificate is pinned by fingerprint |
+| MongoDB | `mongodb` (`mongo`) | **verified**; off only for local / private-network hosts |
+| Lakehouse | `lakehouse` (`iceberg`, `unity`) | **verified** (https); plain http only for local / private hosts |
+| Databricks | `databricks` | not available: adapter calls pinned to the workspace certificate, row path unproven |
 | Snowflake | `snowflake` | not available: its driver must verify certificates, which the import side cannot yet |
 
-`exakit connect` does the whole setup — adapter and JDBC driver downloaded and
-checksum-verified, staged where the database reads them, the database's Java
-runtime installed (one restart, consented), the CONNECTION, adapter script and
+`exakit connect` does the whole setup — adapter (and JDBC driver) downloaded and
+checksum-verified, staged where the database reads them, the runtime installed
+(Java, or the pinned Rust runtime; one restart, consented), the CONNECTION, adapter script and
 virtual schema created — and calls the source ready only after rows came back.
 
 ## Connect a source
@@ -57,6 +63,23 @@ runtime). Without `--yes` (or `EXAKIT_CONFIRM_RUNTIME_UPDATE=1`) and with no
 terminal it exits **5** and changes nothing. That restart stops the database for
 about 30 s (minutes the very first time, while it downloads) — **ask the user
 before passing `--yes`**. Later connects need no restart.
+
+MongoDB (one collection per source; database and collection are not part of
+the connection, so switching collections needs no password):
+
+```bash
+EXAKIT_VS_COLLECTION=people exakit connect mongodb --name people \
+  --url "mongodb://reader@mongo.example.com:27017/shop" --password-file ~/mongo.pw --json
+```
+
+Lakehouse (Iceberg REST with S3 keys: `--user` is the access key, the password
+file holds the secret key; without `--user` it holds a catalog token):
+
+```bash
+EXAKIT_VS_NAMESPACE=shop EXAKIT_VS_WAREHOUSE=s3://warehouse/ \
+EXAKIT_VS_ENDPOINT=http://localhost:9000 exakit connect lakehouse --name lake \
+  --url http://localhost:8181 --user AKIA... --password-file ~/s3.pw --json
+```
 
 Preview without changing anything: add `--dry-run`.
 
@@ -104,16 +127,23 @@ runnable `remedy` (or `null`) plus `remedy_hint`. Branch on `kind`:
 | `tls` | encrypted connection failed | only if the source has no TLS: `--tls none` (private hosts) |
 | `consent` | the restart was not confirmed (exit 5) | ask the user, then `remedy` |
 | `password_needed` | a re-run changed host/port/TLS without a password | pass `--password-file` |
+| `login_or_connection` | MongoDB refused the login or the connection, without saying which | check user, password, authSource, TLS, host (`remedy_hint` lists them) |
+| `runtime_mismatch` | the adapter needs another Rust runtime version | ask the user, then `remedy` (one restart) |
+| `pin_mismatch` | Databricks renewed its certificate | connect again: the new one is verified and pinned |
+| `foreign_object` | a same-named script in `EXAKIT_VS` is not the kit's | tell the user; never drop it |
 | `busy` | another connect/source command runs | wait, retry |
 
 ## What to tell the user
 
 - **AI clients see it.** The MCP read-only user can read every schema, so a new
   `VS_*` is visible to every connected AI client at once. Say so.
-- **TLS is encrypted but not verified** — Exasol Personal has no trust store for
-  it yet. Fine on a trusted network; say so for a cloud database.
-- **Host names** need a workaround the kit applies after every database start
-  (Exasol Personal's Java runtime ships without name resolution). If a source
+- **TLS depends on the source.** PostgreSQL, MySQL and SQL Server are encrypted
+  but not verified (Exasol Personal's import side has no trust store yet) - fine
+  on a trusted network, say so for a cloud database. Exasol, MongoDB and the
+  lakehouse are verified.
+- **Host names** of Java sources need a workaround the kit applies after every
+  database start (Exasol Personal's Java runtime ships without name resolution;
+  the Rust runtime resolves names itself). If a source
   given by name fails after a reboot, `exakit source check <name>` repairs it.
   `EXAKIT_VS_DNS_WORKAROUND=0` makes the kit use IP addresses instead.
 - **`localhost` inside the database is the database itself.** A source on the
