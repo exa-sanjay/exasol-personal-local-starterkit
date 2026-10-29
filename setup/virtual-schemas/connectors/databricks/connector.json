@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "id": "databricks",
+  "label": "Databricks",
+  "aliases": ["dbx"],
+  "runtime": "lua",
+  "available": false,
+  "unavailable_reason": "no live Databricks workspace has proven it: its rows are read through Exasol Personal's import process, whose Java trust store is empty, and whether the Databricks JDBC driver connects without one (AllowSelfSignedCerts) is unverified.",
+  "adapter": {
+    "repo": "exasol/databricks-virtual-schema",
+    "version": "1.0.2",
+    "license": "MIT",
+    "script_scope": "source",
+    "file": "databricks-virtual-schema-dist-1.0.2.lua",
+    "url": "https://github.com/exasol/databricks-virtual-schema/releases/download/1.0.2/databricks-virtual-schema-dist-1.0.2.lua",
+    "sha256_url": "https://github.com/exasol/databricks-virtual-schema/releases/download/1.0.2/databricks-virtual-schema-dist-1.0.2.lua.sha256",
+    "sha256": "675fc2b42357bc3179a993297db6d872952cf821695827a10dd874643abc2a0d"
+  },
+  "driver": {
+    "name": "Databricks JDBC",
+    "version": "3.4.4",
+    "file": "databricks-jdbc-3.4.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/databricks/databricks-jdbc/3.4.4/databricks-jdbc-3.4.4.jar",
+    "sha256_url": "https://repo.maven.apache.org/maven2/com/databricks/databricks-jdbc/3.4.4/databricks-jdbc-3.4.4.jar.sha256",
+    "sha256": "1f2e2c5474f2bfbf914f9647319d0d69d8eeb2b1ebb891b05044d79539a359e7",
+    "license": "Apache-2.0",
+    "settings": {
+      "DRIVERNAME": "EXAKIT_DATABRICKS",
+      "PREFIX": "jdbc:databricks:",
+      "DRIVERMAIN": "com.databricks.client.jdbc.Driver",
+      "FETCHSIZE": "100000",
+      "INSERTSIZE": "-1",
+      "NOSECURITY": "YES"
+    }
+  },
+  "script": {
+    "preamble": "table.insert(package.searchers,\n    function (module_name)\n        local loader = package.preload[module_name]\n        if(loader == nil) then\n            error(\"Module \" .. module_name .. \" not found in package.preload.\")\n        else\n            return loader\n        end\n    end\n)"
+  },
+  "secret_label": "Personal access token",
+  "url": {
+    "scheme": "jdbc:databricks://",
+    "default_port": 443
+  },
+  "inputs": [
+    {"id": "host", "label": "Workspace host", "required": true, "example": "dbc-a1b2c3d4-e5f6.cloud.databricks.com"},
+    {"id": "port", "label": "Port", "type": "port", "default": 443},
+    {"id": "http_path", "label": "SQL warehouse HTTP path", "required": true, "example": "/sql/1.0/warehouses/abc123def456"},
+    {"id": "password", "label": "Personal access token", "secret": true, "required": true},
+    {"id": "catalog", "label": "Catalog", "default": "main", "required": true, "connection": false},
+    {"id": "schema", "label": "Schema", "default": "default", "required": true, "connection": false}
+  ],
+  "properties": {
+    "CATALOG_NAME": "{catalog}",
+    "SCHEMA_NAME": "{schema}"
+  },
+  "tls": {
+    "default": "encrypt",
+    "levels": {
+      "encrypt": {"params": {"ssl": "1", "AllowSelfSignedCerts": "1"}}
+    }
+  },
+  "check": {"statement": "SELECT 1"},
+  "failures": [
+    {"pattern": "E-EXAKIT-PIN", "kind": "pin_mismatch"}
+  ],
+  "messages": {
+    "auth": {"message": "Databricks refused the access token.",
+             "hint": "Create a new personal access token in the workspace (User settings > Developer), then: exakit source reauth {name|lower}"},
+    "pin_mismatch": {"message": "The certificate of {host} no longer matches the one the kit pinned.",
+                     "hint": "Databricks renews its certificates now and then. Connecting again reads and verifies the new one and pins it: exakit connect databricks --name {name|lower}"}
+  },
+  "notes": [
+    "The adapter's metadata calls are checked against the workspace certificate's SHA-256, pinned when you connect (the certificate is verified from this PC first); rows travel encrypted through the JDBC driver.",
+    "Upstream limits: at most 50 tables per virtual schema, BINARY columns are not supported, and TABLE_FILTER is not available."
+  ]
+}

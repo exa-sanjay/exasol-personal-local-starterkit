@@ -629,8 +629,13 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
     offer = plan.tls_offer(connector, host_cls)
     prepare = plan.hook(connector, "prepare")
     if prepare:
-        # e.g. Exasol: the server certificate's fingerprint, read from here.
-        cfg.update(prepare(connector, cfg) or {})
+        # e.g. Exasol, Databricks: the server certificate's fingerprint, read
+        # from here (Databricks: and verified here first).
+        try:
+            cfg.update(prepare(connector, cfg) or {})
+        except plan.PlanError as e:
+            raise Fail(1, str(e), None, "The kit pins only a certificate it can verify from this machine; "
+                                        "check the host name, or the network's TLS inspection.", "tls")
     # localhost inside the database is the database itself: right for a
     # connector whose source IS this database (Exasol), wrong for any other,
     # which is reached through the container's host alias instead.
@@ -1195,6 +1200,9 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
         host, level, fallback = _establish(ctx, connector, cfg, cfg["objects"], cfg["tls"], host_cls,
                                            password, dns_state, first_time)
         cfg.update(db_host=host, tls=level, ip_fallback=fallback)
+        if plan.adapter_scope(connector) == "source":
+            # The source's own script carries what was just read (its pin).
+            _ensure_adapter_script(ctx, connector, cfg)
 
     _ensure_virtual_schema(ctx, connector, cfg, refresh=True, first_time=first_time)
     result = _verify(ctx, cfg, first_time)
@@ -1377,6 +1385,8 @@ def reauth(ctx):
             host, level, fallback = _establish(ctx, connector, new, names, new["tls"],
                                                net.classify_host(new["host"]), password, dns_state, False)
             new.update(db_host=host, tls=level, ip_fallback=fallback)
+            if plan.adapter_scope(connector) == "source":
+                _ensure_adapter_script(ctx, connector, new)
             _ensure_virtual_schema(ctx, connector, new, refresh=False)
             result = _verify(ctx, new)
         except sql.SqlError as e:

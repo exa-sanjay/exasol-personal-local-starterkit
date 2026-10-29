@@ -450,7 +450,7 @@ class Connectors(unittest.TestCase):
 
     def test_all_present(self):
         self.assertEqual(sorted(plan.load_connectors()),
-                         ["exasol", "lakehouse", "mongodb", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
+                         ["databricks", "exasol", "lakehouse", "mongodb", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
 
 
 CS = plan.load_connectors()
@@ -863,6 +863,60 @@ class MongoDB(unittest.TestCase):
                                                   "runtime_active": True})
         self.assertFalse(p["restart_needed"])
         self.assertIn("MONGODB_SCAN", [s for s in p["steps"] if s["step"] == "script"][0]["action"])
+
+
+class Databricks(unittest.TestCase):
+    DB = CS["databricks"]
+    BASE = {"name": "SALES", "host": "dbc-1.cloud.databricks.com", "port": 443,
+            "http_path": "/sql/1.0/warehouses/abc", "catalog": "main", "schema": "sales"}
+
+    def test_unavailable_until_proven(self):
+        self.assertIn("live Databricks workspace", plan.unavailable_reason(self.DB))
+        p = plan.build_plan(self.DB, self.BASE, {"runtime": "lua"})
+        self.assertNotIn("restart", [s["step"] for s in p["steps"]])
+
+    def test_url(self):
+        f, notes = plan.parse_url(self.DB, "jdbc:databricks://dbc-1.cloud.databricks.com:443/default;transportMode=http;"
+                                           "ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/abc;PWD=dapiSECRETzz")
+        self.assertEqual((f["host"], f["port"], f["http_path"]), ("dbc-1.cloud.databricks.com", 443,
+                                                                   "/sql/1.0/warehouses/abc"))
+        self.assertNotIn("dapiSECRETzz", json.dumps(f))
+        self.assertIn("password_stripped", [n[0] for n in notes])
+        url = plan.build_url(self.DB, "dbc-1.cloud.databricks.com", self.BASE, "encrypt")
+        # The adapter parses host AND port from the URL: the port is always there.
+        self.assertEqual(url, "jdbc:databricks://dbc-1.cloud.databricks.com:443/default;transportMode=http;"
+                              "AuthMech=3;httpPath=/sql/1.0/warehouses/abc;AllowSelfSignedCerts=1;ssl=1")
+        self.assertEqual(plan.connection_user(self.DB, self.BASE), "token")
+
+    def test_one_script_per_source(self):
+        self.assertEqual(plan.adapter_scope(self.DB), "source")
+        self.assertEqual(plan.script_name(self.DB, "sales"), "DATABRICKS_SALES")
+        self.assertEqual(plan.script_name(self.DB, "hr"), "DATABRICKS_HR")
+        p = plan.build_plan(self.DB, self.BASE, {"runtime": "lua", "runtime_installed": True, "runtime_active": True})
+        steps = [s["step"] for s in p["steps"]]
+        self.assertFalse(p["restart_needed"])
+        self.assertIn("driver", steps)
+        self.assertNotIn("stage", steps)
+
+    def test_pin_patch(self):
+        h = self.DB["_hooks"]
+        upstream = "x\n" + h._HANDSHAKE + "\ny\n"
+        out = h.adapter_source(self.DB, upstream, {"fingerprint": "AB" * 32})
+        self.assertTrue(out.startswith('local EXAKIT_PINS = {["%s"] = true}' % ("ab" * 32)))
+        self.assertIn("E-EXAKIT-PIN", out)
+        self.assertNotIn(h._HANDSHAKE, out)
+        # No pin yet: an empty table - every handshake refused (fail closed).
+        self.assertTrue(h.adapter_source(self.DB, upstream, {}).startswith("local EXAKIT_PINS = {}"))
+        with self.assertRaises(plan.PlanError):  # an upstream change the patch does not fit
+            h.adapter_source(self.DB, "no handshake here", {"fingerprint": "ab" * 32})
+        with self.assertRaises(plan.PlanError):
+            h.adapter_source(self.DB, upstream, {"fingerprint": "not-hex"})
+
+    def test_pin_mismatch_is_named(self):
+        f = lifecycle._source_fail(dict(self.BASE, connector="databricks", artifacts={"runtime": "lua"}),
+                                   "unknown", Exception("Lua Error E-EXAKIT-PIN: the certificate of x ..."))
+        self.assertEqual(f.kind, "pin_mismatch")
+        self.assertIn("exakit connect databricks --name sales", f.hint)
 
 
 class UiTwin(unittest.TestCase):

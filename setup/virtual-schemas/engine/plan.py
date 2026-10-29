@@ -475,8 +475,9 @@ def build_plan(connector, inputs, facts):
     if drv:
         add("driver", "Register the JDBC driver %s" % drv["settings"]["DRIVERNAME"],
             not facts.get("driver_registered"))
-    add("restart", "Restart the database once, to activate the %s runtime" % rt_label,
-        restart_needed(facts), consent=True)
+    if kind != "lua":  # built into the database: never a restart
+        add("restart", "Restart the database once, to activate the %s runtime" % rt_label,
+            restart_needed(facts), consent=True)
     if kind == "java":
         add("dns", "Link name resolution into the Java sandbox (temporary workaround)",
             facts.get("dns") != "ok")
