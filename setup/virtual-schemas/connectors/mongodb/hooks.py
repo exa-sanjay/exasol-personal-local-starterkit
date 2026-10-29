@@ -18,7 +18,12 @@ _SRV = "mongodb+srv://"
 
 
 def parse_url(connector, text):
-    srv = (text or "").strip().lower().startswith(_SRV)
+    t = (text or "").strip()
+    srv = t.lower().startswith(_SRV)
+    hosts = t.split("://", 1)[-1].split("/", 1)[0].split("?", 1)[0].rsplit("@", 1)[-1]
+    if "," in hosts:
+        raise net.UrlError("give one host of the replica set, not a seed list: the driver finds the other "
+                           "members itself (a mongodb+srv:// address works too)")
     fields, notes = net.parse_url(connector, text)
     params = fields.setdefault("params", {})
     if srv:
@@ -27,8 +32,16 @@ def parse_url(connector, text):
         params.setdefault("tls", "true")
     if "ssl" in params:  # the older spelling of the same switch
         params.setdefault("tls", params.pop("ssl"))
-    if params.get("authSource"):
-        fields["auth_source"] = params.pop("authSource")
+    if "tls" in params:
+        params["tls"] = params["tls"].lower()
+    auth = params.pop("authSource", None)
+    if auth and auth != "admin":
+        # exasol-mongodb-vs 0.1.3 authenticates against admin whatever the
+        # URI says (seen in the MongoDB server log): a user defined elsewhere
+        # could never log in. Said now, instead of a refused login later.
+        raise net.UrlError("the MongoDB adapter always logs in against the admin database, so authSource=%s "
+                           "cannot work: use a user defined in admin (with the read role on the database "
+                           "to query)" % auth)
     return fields, notes
 
 
@@ -40,7 +53,7 @@ def build_url(connector, host, inputs, level, params):
         base = "%s%s/" % (_SRV, h)
     else:
         base = "mongodb://%s:%s/" % (h, inputs.get("port") or connector["url"]["default_port"])
-    p["authSource"] = inputs.get("auth_source") or "admin"
+    p["authSource"] = "admin"  # what the adapter uses anyway; written so the URI says the truth
     return base + "?" + "&".join("%s=%s" % (k, net.quote(str(v), safe="")) for k, v in sorted(p.items()))
 
 

@@ -193,7 +193,14 @@ class Db:
             raise SqlError(state.redact(str(e)), "db_down")
 
     def run(self, sql, fetch=True):
-        state.log("SQL", sql)
+        if len(sql) > 4000:
+            # A Lua adapter carries its whole source (about 185 KB): its first
+            # line and a digest say which one ran without filling the log.
+            import hashlib
+            state.log("SQL", "%s ... (%d characters, sha256 %s)" % (
+                sql.splitlines()[0], len(sql), hashlib.sha256(sql.encode("utf-8")).hexdigest()[:16]))
+        else:
+            state.log("SQL", sql)
         try:
             st = self.c.execute(sql)
         except Exception as e:

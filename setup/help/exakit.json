@@ -199,8 +199,9 @@
         "EXAKIT_VS_SOURCE, EXAKIT_VS_NAME, EXAKIT_VS_JDBC_URL (or EXAKIT_VS_HOST, EXAKIT_VS_PORT, EXAKIT_VS_DATABASE), EXAKIT_VS_USER, EXAKIT_VS_SCHEMA answer the questions",
         "EXAKIT_VS_PASSWORD_FILE=<path> supplies the password; there is no --password option",
         "EXAKIT_VS_TLS=verify|encrypt|none chooses the TLS level for a run with no terminal",
-        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (or --yes) consents to the one restart the Java runtime needs",
-        "EXAKIT_VS_DNS_WORKAROUND=0 stops the kit linking name resolution into the database's Java runtime after each start (a temporary workaround for Exasol Personal); sources given by host name are then reached by their IP address"
+        "EXAKIT_CONFIRM_RUNTIME_UPDATE=1 (or --yes) consents to the one restart a missing runtime needs (Java, or the Rust runtime for MongoDB and the lakehouse)",
+        "EXAKIT_VS_DNS_WORKAROUND=0 stops the kit linking name resolution into the database's Java runtime after each start (a temporary workaround for Exasol Personal); sources given by host name are then reached by their IP address",
+        "EXAKIT_VS_<FIELD> answers a connector's own questions, e.g. EXAKIT_VS_COLLECTION (MongoDB), EXAKIT_VS_NAMESPACE (lakehouse), EXAKIT_VS_HTTP_PATH (Databricks)"
       ],
       "exit_codes": "0 ready · 1 the source could not be reached or read (remedy names the fix) · 2 bad input · 3 database not running · 4 not installed · 5 the restart was not confirmed",
       "examples": [
@@ -208,7 +209,7 @@
         "exakit connect postgresql --name sales --url jdbc:postgresql://db.example.com:5432/shop --user reader --schema public --password-file ~/pg.pw",
         "exakit connect postgresql --name sales --dry-run",
         "exakit connect mysql --name shop --url jdbc:mysql://db.example.com:3306/shop --user reader --password-file ~/my.pw",
-        "EXAKIT_VS_COLLECTION=people exakit connect mongodb --name people --url mongodb://reader@mongo.example.com:27017/shop --password-file ~/mongo.pw"
+        "exakit connect mongodb --name people --url mongodb://reader@mongo.example.com:27017/shop --password-file ~/mongo.pw"
       ]
     },
     {

@@ -829,18 +829,25 @@ class Lakehouse(unittest.TestCase):
 
 class MongoDB(unittest.TestCase):
     MG = CS["mongodb"]
-    BASE = {"name": "PEOPLE", "host": "mongo.example.com", "port": 27017, "auth_source": "admin",
+    BASE = {"name": "PEOPLE", "host": "mongo.example.com", "port": 27017,
             "user": "reader", "database": "shop", "collection": "people"}
 
     def test_url(self):
-        f, notes = plan.parse_url(self.MG, "mongodb://reader:s3cretZZ@db.example.com:27018/shop?authSource=users"
+        f, notes = plan.parse_url(self.MG, "mongodb://reader:s3cretZZ@db.example.com:27018/shop?authSource=admin"
                                            "&replicaSet=rs0&tls=true")
-        self.assertEqual((f["host"], f["port"], f["database"], f["user"], f["auth_source"]),
-                         ("db.example.com", 27018, "shop", "reader", "users"))
+        self.assertEqual((f["host"], f["port"], f["database"], f["user"]), ("db.example.com", 27018, "shop", "reader"))
         self.assertNotIn("s3cretZZ", json.dumps(f))
         self.assertIn("password_stripped", [n[0] for n in notes])
-        merged = plan.merge_url(self.MG, {"url": "mongodb://db.example.com/shop?tls=false"}, [])
+        merged = plan.merge_url(self.MG, {"url": "mongodb://db.example.com/shop?tls=FALSE"}, [])
         self.assertEqual(merged["tls"], "none")
+        # The adapter logs in against admin whatever the URI says: refused up
+        # front, with the reason, instead of a refused login later.
+        with self.assertRaises(net.UrlError) as cm:
+            plan.parse_url(self.MG, "mongodb://reader@db.example.com/shop?authSource=shop")
+        self.assertIn("admin", str(cm.exception))
+        with self.assertRaises(net.UrlError) as cm:
+            plan.parse_url(self.MG, "mongodb://reader@h1:27017,h2:27017/shop?replicaSet=rs0")
+        self.assertIn("one host", str(cm.exception))
         srv = plan.merge_url(self.MG, {"url": "mongodb+srv://cluster0.ab12.mongodb.net/shop"}, [])
         self.assertEqual((srv["tls"], srv["params"]), ("verify", {"srv": "true"}))
 
@@ -863,6 +870,81 @@ class MongoDB(unittest.TestCase):
                                                   "runtime_active": True})
         self.assertFalse(p["restart_needed"])
         self.assertIn("MONGODB_SCAN", [s for s in p["steps"] if s["step"] == "script"][0]["action"])
+
+
+class FinalReview(unittest.TestCase):
+    """One case per finding of the review of Phases 9-11."""
+
+    def test_connector_patterns_win_over_generic_kinds(self):
+        # The pin error says 'certificate', which the generic patterns call
+        # tls; the connector's own pattern must decide first.
+        err = "Lua Error E-EXAKIT-PIN: the certificate of dbc-1 is not the one the kit pinned (abc)"
+        self.assertEqual(sql.classify(err), "tls")
+        cfg = {"name": "SALES", "connector": "databricks", "host": "dbc-1.cloud.databricks.com", "port": 443,
+               "artifacts": {"runtime": "lua"}}
+        f = lifecycle._source_fail(cfg, sql.classify(err), Exception(err))
+        self.assertEqual(f.kind, "pin_mismatch")
+        self.assertIn("exakit source check sales", f.hint)
+
+    def test_mongodb_failures(self):
+        cfg = {"name": "P", "connector": "mongodb", "host": "10.0.0.9", "port": 27017, "database": "shop",
+               "collection": "people", "user": "reader", "artifacts": {"runtime": "rust"}}
+        for text, kind in (("UDF error: MongoDB error while opening the nested cursor", "permission"),
+                           ("collection 'shop.nosuch' does not exist", "collection_missing"),
+                           ("column '__mongodb_source_json' value has 15728716 characters but is VARCHAR(2000000)",
+                            "document_too_large")):
+            self.assertEqual(lifecycle._source_fail(cfg, sql.classify(text), Exception(text)).kind, kind)
+
+    def test_a_silent_local_source_is_network_not_login(self):
+        cfg = {"name": "P", "connector": "mongodb", "host": "127.0.0.1", "port": 1, "user": "reader",
+               "artifacts": {"runtime": "rust"}}
+        f = lifecycle._source_fail(cfg, "unknown", Exception("MongoDB error while reading collection metadata"))
+        self.assertEqual(f.kind, "network")
+
+    def test_unity_alias_means_unity_catalog(self):
+        self.assertEqual(CS["lakehouse"]["alias_inputs"]["unity"], {"catalog": "unity"})
+
+    def test_needs_refresh_mark(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = os.environ.get("EXAKIT_HOME")
+            os.environ["EXAKIT_HOME"] = d
+            try:
+                state.source_dir("q1").mkdir(parents=True)
+                self.assertFalse(lifecycle._needs_refresh("Q1"))
+                lifecycle._mark_refresh("Q1", True)
+                self.assertTrue(lifecycle._needs_refresh("Q1"))
+                lifecycle._mark_refresh("Q1", False)
+                self.assertFalse(lifecycle._needs_refresh("Q1"))
+                lifecycle._mark_refresh("NOSUCH", True)  # no source folder: nothing written
+                self.assertFalse(state.source_dir("nosuch").exists())
+            finally:
+                if old is None:
+                    os.environ.pop("EXAKIT_HOME")
+                else:
+                    os.environ["EXAKIT_HOME"] = old
+
+    def test_pinned_handshake_sends_the_host_name(self):
+        h = CS["databricks"]["_hooks"]
+        out = h.adapter_source(CS["databricks"], "x\n" + h._HANDSHAKE + "\n", {"fingerprint": "ab" * 32})
+        self.assertLess(out.index("self.c:sni(host)"), out.index("self.c:dohandshake()"))
+
+    def test_long_statements_are_logged_as_a_digest(self):
+        logged = []
+        orig = state.log
+        state.log = lambda level, text: logged.append(text)
+        try:
+            db = sql.Db.__new__(sql.Db)
+
+            class _C:
+                def execute(self, s):
+                    raise RuntimeError("stop here")
+            db.c = _C()
+            with self.assertRaises(sql.SqlError):
+                db.run("CREATE OR REPLACE LUA ADAPTER SCRIPT X AS\n" + "-- x\n" * 2000)
+        finally:
+            state.log = orig
+        self.assertIn("characters, sha256", logged[0])
+        self.assertLess(len(logged[0]), 300)
 
 
 class Databricks(unittest.TestCase):
@@ -916,7 +998,7 @@ class Databricks(unittest.TestCase):
         f = lifecycle._source_fail(dict(self.BASE, connector="databricks", artifacts={"runtime": "lua"}),
                                    "unknown", Exception("Lua Error E-EXAKIT-PIN: the certificate of x ..."))
         self.assertEqual(f.kind, "pin_mismatch")
-        self.assertIn("exakit connect databricks --name sales", f.hint)
+        self.assertIn("exakit source check sales", f.hint)
 
 
 class UiTwin(unittest.TestCase):

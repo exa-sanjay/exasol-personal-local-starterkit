@@ -68,7 +68,7 @@ def main():
     try:
         got = attempt(pin)
         check("the right pin: the handshake passes (Databricks itself answers)",
-              "E-EXAKIT-PIN" not in got and "E-VSDAB" in got, got)
+              "E-EXAKIT-PIN" not in got and "E-VSDAB-5" in got, got)  # E-VSDAB-5: an HTTP status from Databricks
         got = attempt("0" * 64)
         check("a wrong pin is refused by the kit's patch", "E-EXAKIT-PIN" in got, got)
         got = attempt(None)

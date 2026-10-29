@@ -61,13 +61,17 @@
   },
   "check": {"statement": "SELECT 1"},
   "failures": [
-    {"pattern": "E-EXAKIT-PIN", "kind": "pin_mismatch"}
+    {"pattern": "E-EXAKIT-PIN", "kind": "pin_mismatch"},
+    {"pattern": "Connection failure while using the OSS Databricks JDBC driver", "kind": "network"},
+    {"pattern": "Internal communication error", "kind": "import_failed"}
   ],
   "messages": {
     "auth": {"message": "Databricks refused the access token.",
              "hint": "Create a new personal access token in the workspace (User settings > Developer), then: exakit source reauth {name|lower}"},
     "pin_mismatch": {"message": "The certificate of {host} no longer matches the one the kit pinned.",
-                     "hint": "Databricks renews its certificates now and then. Connecting again reads and verifies the new one and pins it: exakit connect databricks --name {name|lower}"}
+                     "hint": "Databricks renews its certificates now and then. A check reads the new one, verifies it from this PC and pins it: exakit source check {name|lower}"},
+    "import_failed": {"message": "Exasol Personal's import process failed while the Databricks driver connected.",
+                      "hint": "This is the row path that keeps the Databricks connector marked unavailable: the import process has no Java trust store. Meanwhile, Databricks tables can be read through the lakehouse connector: exakit connect unity (a personal access token, EXAKIT_VS_NAMESPACE=<catalog>.<schema>)."}
   },
   "notes": [
     "The adapter's metadata calls are checked against the workspace certificate's SHA-256, pinned when you connect (the certificate is verified from this PC first); rows travel encrypted through the JDBC driver.",

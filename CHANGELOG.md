@@ -49,7 +49,10 @@ marketplace add-on.
   until a live workspace proves its row path. Its Lua adapter's HTTPS calls
   are pinned: the kit reads the workspace certificate from this machine with
   full verification and patches the adapter to accept exactly that
-  certificate, closing the upstream gap where certificate checks are off.
+  certificate, closing the upstream gap where certificate checks are off;
+  `exakit source check` re-reads, verifies and re-pins a renewed certificate.
+  Meanwhile Databricks tables are reachable through `exakit connect unity`
+  (the lakehouse connector's Unity Catalog route).
 - Adapter upgrades: a shared native adapter moves all of its sources to a
   new version together and refreshes their virtual schemas; a stale record is
   moved forward rather than pointing the shared script back at an old

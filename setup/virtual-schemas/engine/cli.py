@@ -34,7 +34,7 @@ def _parser():
     c = sub.add_parser("connect", help="connect an external database as a virtual schema", allow_abbrev=False)
     c.add_argument("source", nargs="?")
     c.add_argument("--name")
-    c.add_argument("--url", help="a JDBC URL (or postgres:// URI) instead of host/port/database")
+    c.add_argument("--url", help="the source's address instead of host/port/database: a JDBC URL, a postgres:// or mongodb[+srv]:// URI, a lakehouse catalog's http(s):// URL, or a bare host[:port][/database]")
     c.add_argument("--host")
     c.add_argument("--port")
     c.add_argument("--database")

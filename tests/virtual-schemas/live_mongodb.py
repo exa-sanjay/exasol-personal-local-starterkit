@@ -88,8 +88,8 @@ def main():
 
     # Another collection of the same database is a property change: no password.
     rc, o = run("connect", "mongodb", "--name", "qa_mongo", env={"EXAKIT_VS_COLLECTION": "nosuch"})
-    check("a collection change needs no password, and an unknown collection is reported",
-          rc != 2 and o.get("kind") != "password_needed", o)
+    check("a collection change needs no password, and a missing collection is named",
+          rc == 1 and o.get("kind") == "collection_missing", o)
     rc, o = run("connect", "mongodb", "--name", "qa_mongo")
     check("...and switching back works", rc == 0, o)
 
@@ -105,12 +105,18 @@ def main():
 
     rc, o = run("connect", "mongodb", "--name", "qa_mongo_bad", "--url", URL, "--password-file", str(bad))
     check("a wrong password on a first connect fails with what to check",
-          rc == 1 and o.get("kind") == "login_or_connection" and "authentication database" in (o.get("remedy_hint") or ""), o)
+          rc == 1 and o.get("kind") == "login_or_connection" and "admin database" in (o.get("remedy_hint") or ""), o)
+    # The adapter logs in against admin whatever the URI says: another
+    # authSource is refused before anything is made.
+    rc, o = run("connect", "mongodb", "--name", "qa_mongo_as", "--url",
+                "mongodb://reader@localhost:27017/shop?tls=false&authSource=shop", "--password-file", pw)
+    check("a non-admin authSource is refused up front with the reason",
+          rc == 2 and "admin" in (o.get("error") or ""), o)
     rc, o = run("connect", "mongodb", "--name", "qa_mongo_tls", "--url", "mongodb://reader@localhost:27017/shop",
                 "--password-file", pw, "--tls", "verify")
     check("TLS against a plain MongoDB fails with what to check",
           rc == 1 and o.get("kind") == "login_or_connection" and "--tls none" in (o.get("remedy_hint") or ""), o)
-    left = [n for n in ("qa_mongo_bad", "qa_mongo_tls") if (HOME / "sources" / n).exists()]
+    left = [n for n in ("qa_mongo_bad", "qa_mongo_tls", "qa_mongo_as") if (HOME / "sources" / n).exists()]
     check("failed first connects left nothing", not left, left)
 
     rc, o = run("source", "remove", "qa_mongo", "--yes")

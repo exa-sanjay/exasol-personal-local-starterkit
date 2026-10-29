@@ -81,6 +81,17 @@ EXAKIT_VS_ENDPOINT=http://localhost:9000 exakit connect lakehouse --name lake \
   --url http://localhost:8181 --user AKIA... --password-file ~/s3.pw --json
 ```
 
+Databricks tables, while the `databricks` connector is unavailable: the lakehouse's
+Unity Catalog route (`unity` sets it), a personal access token as the password, no `--user`:
+
+```bash
+EXAKIT_VS_NAMESPACE=main.sales exakit connect unity --name sales \
+  --url https://dbc-a1b2c3d4-e5f6.cloud.databricks.com --password-file ~/dbx-token --json
+```
+
+MongoDB users must be defined in the `admin` database: the adapter always logs in
+there, and the kit refuses another `authSource`.
+
 Preview without changing anything: add `--dry-run`.
 
 ## Query it
@@ -127,9 +138,10 @@ runnable `remedy` (or `null`) plus `remedy_hint`. Branch on `kind`:
 | `tls` | encrypted connection failed | only if the source has no TLS: `--tls none` (private hosts) |
 | `consent` | the restart was not confirmed (exit 5) | ask the user, then `remedy` |
 | `password_needed` | a re-run changed host/port/TLS without a password | pass `--password-file` |
-| `login_or_connection` | MongoDB refused the login or the connection, without saying which | check user, password, authSource, TLS, host (`remedy_hint` lists them) |
+| `login_or_connection` | MongoDB refused the login or the connection, without saying which | check user and password (the user must be defined in `admin`), TLS, host (`remedy_hint` lists them) |
+| `collection_missing` | MongoDB has no such collection | fix the name, or point the source at another: `EXAKIT_VS_COLLECTION=<c> exakit connect mongodb --name <name>` (no password) |
 | `runtime_mismatch` | the adapter needs another Rust runtime version | ask the user, then `remedy` (one restart) |
-| `pin_mismatch` | Databricks renewed its certificate | connect again: the new one is verified and pinned |
+| `pin_mismatch` | Databricks renewed its certificate | `exakit source check <name>`: the new one is verified from this machine and pinned (no token needed) |
 | `foreign_object` | a same-named script in `EXAKIT_VS` is not the kit's | tell the user; never drop it |
 | `busy` | another connect/source command runs | wait, retry |
 

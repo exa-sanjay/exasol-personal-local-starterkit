@@ -114,25 +114,47 @@ def _connector_or_none(cfg):
         return None
 
 
+def _reachable_here(host, port, timeout=3):
+    """Does anything answer on host:port from THIS machine? Only asked for a
+    host on this machine or a private network, where the answer from here
+    says the same as the answer from the database container."""
+    import socket
+    try:
+        # The host as given, so every address it resolves to is tried: a port
+        # Podman publishes on Windows may answer on ::1 and not on 127.0.0.1.
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
 def _source_fail(cfg, kind, err, first_time=False):
     detail = sql.short(str(err)) if err else ""
     runtime_kind = (cfg.get("artifacts") or {}).get("runtime", "java")
+    # A connector's own patterns FIRST: its adapter's wording (MongoDB reports
+    # a refused login and a TLS mismatch with one line; the kit's Databricks
+    # pin says 'certificate') would otherwise be taken for a generic kind and
+    # get the generic - wrong - advice.
+    text = str(err or "")
+    for f in (_connector_or_none(cfg) or {}).get("failures", []):
+        if re.search(f["pattern"], text, re.I):
+            kind = f["kind"]
+            break
     if kind == "dns" and runtime_kind != "java":
         # Only the Java sandbox has the name-resolution gap the kit repairs;
         # a Rust or Lua runtime that cannot resolve a name means the name does
         # not resolve from the database at all.
         kind = "network"
-    if kind == "network" and cfg.get("host") and not net.is_ip(cfg["host"]) and \
-            net.classify_host(cfg["host"]) != "loopback" and not net.resolve_here(cfg["host"]):
+    host = cfg.get("host")
+    srv = (cfg.get("params") or {}).get("srv") == "true"  # SRV names have no address of their own
+    if kind in ("network", "login_or_connection", "unknown") and host and not net.is_ip(host) and not srv and \
+            net.classify_host(host) != "loopback" and not net.resolve_here(host):
         kind = "unresolvable"
-    if kind == "unknown":
-        # An adapter's own wording the generic patterns cannot know (MongoDB
-        # reports a refused login and a TLS mismatch with the same line).
-        text = str(err or "")
-        for f in (_connector_or_none(cfg) or {}).get("failures", []):
-            if re.search(f["pattern"], text, re.I):
-                kind = f["kind"]
-                break
+    elif kind in ("login_or_connection", "unknown") and host and cfg.get("port") and not srv and \
+            host.lower() not in (net.HOST_ALIAS, "host.docker.internal") and \
+            net.classify_host(host) in ("loopback", "private") and not _reachable_here(host, cfg["port"]):
+        # A local or private source that does not even answer: not the password.
+        kind = "network"
     if kind == "runtime_mismatch":
         _runtime_suspect(runtime_kind)
     msg, remedy, hint = explain(kind, cfg, detail, first_time)
@@ -151,6 +173,9 @@ class Ctx:
             # A JSON caller is a program: never block it on a prompt it cannot see.
             os.environ["EXAKIT_VS_NONINTERACTIVE"] = "1"
         self.ui = ui_mod.UI(json_mode=self.json, quiet=self.json)
+        # What a command warned about that a --json caller must see too (the
+        # screen's warnings are not on stdout in JSON mode).
+        self.warnings = []
         try:
             self.manifest = state.read_manifest()
         except state.NotInstalled as e:
@@ -433,6 +458,10 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
     why = plan.unavailable_reason(connector)
     if why:
         raise Fail(2, "%s cannot be connected yet: %s" % (connector["label"], why), None, None, "unavailable")
+    # An alias can stand for answers (lakehouse's `unity` is the Unity
+    # Catalog route); anything given explicitly still wins.
+    for k, v in (connector.get("alias_inputs") or {}).get(inputs["source"].strip().lower(), {}).items():
+        inputs.setdefault(k, v)
     for k, v in plan.connector_env(connector).items():
         inputs.setdefault(k, v)
 
@@ -469,7 +498,7 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
                 continue
             if not f.get("required"):
                 continue
-            in_url = f["id"] in ("host", "port", "database", "user", "auth_source", "path")
+            in_url = f["id"] in ("host", "port", "database", "user", "path", "http_path")
             raise Fail(2, "%s is required: set %s%s" % (f["label"], env,
                                                         " (or EXAKIT_VS_JDBC_URL)" if in_url else ""))
         answer = u.ask(f["label"] + ("" if f.get("required") else " (optional)"), str(f.get("default") or ""))
@@ -785,6 +814,9 @@ def _ensure_virtual_schema(ctx, connector, cfg, refresh=True, first_time=False):
     script = cfg["objects"]["script"].split(".", 1)[1]
     props = plan.vs_properties(connector, names, cfg, cfg.get("db_host"))
     vs = sql.ident(names["schema"])
+    # Moved to a new adapter version and not refreshed since: refresh now,
+    # whatever the caller asked for.
+    refresh = refresh or _needs_refresh(cfg["name"])
     adapter = db.value("SELECT ADAPTER_SCRIPT_NAME FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE SCHEMA_NAME = %s"
                        % sql.literal(names["schema"]))
     if adapter and adapter != script:
@@ -794,6 +826,7 @@ def _ensure_virtual_schema(ctx, connector, cfg, refresh=True, first_time=False):
     if not adapter:
         _vs_call(ctx, cfg, sql.create_virtual_schema(names["schema"], script, props), first_time)
         db.run(_comment("SCHEMA", vs), fetch=False)
+        _mark_refresh(cfg["name"], False)
         ctx.ui.ok("Virtual schema %s created" % names["schema"])
         return "created"
     current = dict(db.run("SELECT PROPERTY_NAME, PROPERTY_VALUE FROM SYS.EXA_ALL_VIRTUAL_SCHEMA_PROPERTIES "
@@ -806,6 +839,8 @@ def _ensure_virtual_schema(ctx, connector, cfg, refresh=True, first_time=False):
     elif refresh:
         _vs_call(ctx, cfg, "ALTER VIRTUAL SCHEMA %s REFRESH" % vs, first_time)
         ctx.ui.ok("Virtual schema %s refreshed" % names["schema"])
+    # SET rebuilds the metadata as much as REFRESH does.
+    _mark_refresh(cfg["name"], False)
     db.run(_comment("SCHEMA", vs), fetch=False)
     return "updated" if changed else "refreshed"
 
@@ -937,7 +972,7 @@ def connect(ctx):
                "connection": names["connection"], "tables": result["tables"], "tls": cfg["tls"],
                "db_host": cfg["db_host"], "ip_fallback": cfg.get("ip_fallback", False),
                "sample_query": result["sample_query"], "mcp_visible": True,
-               "remedy": None, "remedy_hint": None}
+               "warnings": ctx.warnings, "remedy": None, "remedy_hint": None}
 
 
 def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requested_level, first_time):
@@ -1096,7 +1131,8 @@ def _move_forward(ctx, connector, cfg):
         new = artifacts.describe(connector, c["name"])
         if old != new["adapter_key"]:
             c["artifacts"] = dict(c.get("artifacts") or {}, **new)
-            moved.append(c["objects"]["schema"])
+            moved.append((c["name"], c["objects"]["schema"]))
+            _mark_refresh(c["name"], True)
             artifacts.add_ref(reg, "adapters", new["adapter_key"], c["name"], _adapter_entry(connector, c))
             if old:
                 artifacts.drop_ref(reg, "adapters", old, c["name"])
@@ -1116,19 +1152,45 @@ def _move_forward(ctx, connector, cfg):
     return moved
 
 
-def _refresh_moved(ctx, schemas):
-    """REFRESH the kit's virtual schemas that moved to a new adapter version.
-    One that does not refresh (its own source is down) is said, not fatal:
-    its own `source check` repairs it later."""
-    for s in schemas:
+def _mark_refresh(name, needed):
+    """A source whose virtual schema must be REFRESHed before it can be
+    trusted (it moved to a new adapter version, whose stored notes differ).
+    Kept in its state until a refresh succeeds; every command that touches
+    the schema honours it (_ensure_virtual_schema)."""
+    d = state.source_dir(name)
+    if not d.is_dir():
+        return
+    st = state.read_json(d / "state.json", {}) or {}
+    if bool(st.get("needs_refresh")) == bool(needed):
+        return
+    if needed:
+        st["needs_refresh"] = True
+    else:
+        st.pop("needs_refresh", None)
+    state.write_json(d / "state.json", st)
+
+
+def _needs_refresh(name):
+    return bool((state.read_json(state.source_dir(name) / "state.json", {}) or {}).get("needs_refresh"))
+
+
+def _refresh_moved(ctx, moved):
+    """REFRESH the kit's virtual schemas that moved to a new adapter version
+    ([(source, schema)]). One that does not refresh (its own source is down)
+    is said - also in --json, as a warning - and stays marked until its own
+    refresh succeeds."""
+    for name, s in moved:
         if not _owned(ctx.db.run("SELECT SCHEMA_COMMENT FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s"
                                  % sql.literal(s))):
             continue
         try:
             ctx.db.run("ALTER VIRTUAL SCHEMA %s REFRESH" % sql.ident(s), fetch=False)
+            _mark_refresh(name, False)
         except sql.SqlError as e:
-            ctx.ui.warn("%s moved to the new adapter but did not refresh (%s); its source check repairs it."
-                        % (s, sql.short(str(e))))
+            text = ("%s moved to the new adapter but did not refresh (%s); repair it with: exakit source "
+                    "refresh %s" % (s, sql.short(str(e)), name.lower()))
+            ctx.ui.warn(text)
+            ctx.warnings.append(text)
 
 
 def _stage(ctx, connector, quiet=False):
@@ -1182,9 +1244,11 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
         _runtime_proven(facts["runtime"])
     # Before any probe: a source without a JDBC side is probed THROUGH its
     # adapter, and every later step needs the script anyway.
+    if password is None:  # a token-less re-run: the certificate may have been renewed
+        _repin(ctx, connector, cfg)
     _ensure_adapter_script(ctx, connector, cfg)
     # This source's own schema is refreshed below; the others that moved now.
-    _refresh_moved(ctx, [s for s in moved if s != cfg["objects"]["schema"]])
+    _refresh_moved(ctx, [m for m in moved if m[0] != cfg["name"]])
 
     if password is None:
         try:
@@ -1290,6 +1354,31 @@ def _connection_exists(ctx, cfg):
                              % sql.literal(cfg["objects"]["connection"])))
 
 
+def _repin(ctx, connector, cfg):
+    """A source whose own script carries a certificate pin (Databricks):
+    when the server now presents another certificate - read and VERIFIED
+    from this machine, exactly like the first pin - pin that one. Needs no
+    token: re-pinning changes only the script, which the caller re-creates.
+    Without this a routine certificate renewal broke the source for good."""
+    prepare = plan.hook(connector, "prepare")
+    if not prepare or plan.adapter_scope(connector) != "source":
+        return
+    try:
+        got = (prepare(connector, cfg) or {}).get("fingerprint")
+    except plan.PlanError as e:
+        raise Fail(1, str(e), None, "The kit pins only a certificate it can verify from this machine.", "tls")
+    if got and got != cfg.get("fingerprint"):
+        had = bool(cfg.get("fingerprint"))
+        cfg["fingerprint"] = got
+        if (state.source_dir(cfg["name"]) / "config.json").is_file():
+            state.write_json(state.source_dir(cfg["name"]) / "config.json", cfg)
+        if had:
+            text = ("%s presents a new certificate; it verified from this machine and is now the one pinned "
+                    "(SHA-256 %s...)." % (cfg.get("host"), got[:16]))
+            ctx.ui.warn(text)
+            ctx.warnings.append(text)
+
+
 def _check_runtime(ctx, connector, cfg):
     """What a restart or an outside change can undo, repaired before judging:
     the staged files of THIS source's adapter version, the driver
@@ -1326,8 +1415,11 @@ def _check_runtime(ctx, connector, cfg):
             cfg["objects"]["schema"], art.get("adapter_version"), connector["adapter"]["version"]),
             _connect_cmd(cfg), "Connecting again moves the source to the current adapter.", "upgrade_needed")
     st = _ensure_runtime_active(ctx, connector, cfg)
+    _repin(ctx, connector, cfg)
     _ensure_adapter_script(ctx, connector, cfg)
-    _refresh_moved(ctx, moved)
+    # The source's own schema is refreshed by the caller's _ensure_virtual_schema
+    # (with the new credentials, in reauth); the others that moved now.
+    _refresh_moved(ctx, [m for m in moved if m[0] != cfg["name"]])
     return st
 
 
@@ -1354,8 +1446,9 @@ def check(ctx):
             _ensure_virtual_schema(ctx, connector, cfg, refresh=False)
             result = _verify(ctx, cfg)
         except sql.SqlError as e:
-            _save_state(cfg, st, status="failed", last_outcome=e.kind)
-            raise _source_fail(cfg, e.kind, e)
+            f = _source_fail(cfg, e.kind, e)
+            _save_state(cfg, st, status="failed", last_outcome=f.kind)
+            raise f
         except Fail as f:
             _save_state(cfg, st, status="failed", last_outcome=f.kind or "failed")
             raise
@@ -1366,7 +1459,7 @@ def check(ctx):
             connector["adapter"]["version"], _connect_cmd(cfg)))
     u.done("%s is healthy" % names["schema"])
     return 0, {"ok": True, "status": "ready", "source": cfg["name"], "tables": result["tables"],
-               "remedy": None, "remedy_hint": None}
+               "warnings": ctx.warnings, "remedy": None, "remedy_hint": None}
 
 
 def reauth(ctx):
@@ -1390,8 +1483,9 @@ def reauth(ctx):
             _ensure_virtual_schema(ctx, connector, new, refresh=False)
             result = _verify(ctx, new)
         except sql.SqlError as e:
-            _save_state(cfg, st, status="failed", last_outcome=e.kind)
-            raise _source_fail(new, e.kind, e)
+            f = _source_fail(new, e.kind, e)
+            _save_state(cfg, st, status="failed", last_outcome=f.kind)
+            raise f
         except Fail as f:
             _save_state(cfg, st, status="failed", last_outcome=f.kind or "failed")
             raise
@@ -1399,7 +1493,8 @@ def reauth(ctx):
         state.write_json(state.source_dir(cfg["name"]) / "config.json", new)
         _save_state(new, st, status="ready", last_outcome="ok", tables=result["tables"])
     ctx.ui.done("New credentials work for %s" % names["schema"])
-    return 0, {"ok": True, "status": "ready", "source": cfg["name"], "remedy": None, "remedy_hint": None}
+    return 0, {"ok": True, "status": "ready", "source": cfg["name"], "warnings": ctx.warnings,
+               "remedy": None, "remedy_hint": None}
 
 
 def refresh(ctx):
@@ -1413,8 +1508,9 @@ def refresh(ctx):
             _ensure_virtual_schema(ctx, connector, cfg, refresh=True)
             result = _verify(ctx, cfg)
         except sql.SqlError as e:
-            _save_state(cfg, st, status="failed", last_outcome=e.kind)
-            raise _source_fail(cfg, e.kind, e)
+            f = _source_fail(cfg, e.kind, e)
+            _save_state(cfg, st, status="failed", last_outcome=f.kind)
+            raise f
         except Fail as f:
             _save_state(cfg, st, status="failed", last_outcome=f.kind or "failed")
             raise
@@ -1422,7 +1518,7 @@ def refresh(ctx):
                     last_outcome="ok", tables=result["tables"])
     ctx.ui.done("%s refreshed: %d table(s)" % (names["schema"], len(result["tables"])))
     return 0, {"ok": True, "status": "ready", "source": cfg["name"], "tables": result["tables"],
-               "remedy": None, "remedy_hint": None}
+               "warnings": ctx.warnings, "remedy": None, "remedy_hint": None}
 
 
 # --- remove ----------------------------------------------------------------------------------
@@ -1691,7 +1787,8 @@ def list_sources(ctx):
         st = state.read_json(sub / "state.json", {}) or {}
         rows.append({"name": cfg["name"].lower(), "connector": cfg["connector"],
                      "schema": cfg["objects"]["schema"], "host": "%s:%s" % (cfg["host"], cfg["port"]),
-                     "tls": cfg.get("tls"), "status": st.get("status", "unknown"),
+                     "tls": cfg.get("tls"),
+                     "status": "needs_refresh" if st.get("needs_refresh") else st.get("status", "unknown"),
                      "last_check": st.get("last_check")})
     if rows:
         ctx.ui.table(["NAME", "SOURCE", "SCHEMA", "HOST", "TLS", "STATUS", "LAST CHECK"],

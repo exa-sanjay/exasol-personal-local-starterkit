@@ -39,8 +39,7 @@
   "inputs": [
     {"id": "host", "label": "Host", "required": true, "example": "mongo.example.com"},
     {"id": "port", "label": "Port", "type": "port", "default": 27017},
-    {"id": "auth_source", "label": "Authentication database (authSource)", "default": "admin"},
-    {"id": "user", "label": "User", "required": true},
+    {"id": "user", "label": "User (defined in the admin database)", "required": true},
     {"id": "password", "label": "Password", "secret": true, "required": true},
     {"id": "database", "label": "Database", "required": true, "connection": false},
     {"id": "collection", "label": "Collection", "required": true, "connection": false}
@@ -57,20 +56,31 @@
   },
   "check": {"kind": "vs"},
   "failures": [
+    {"pattern": "opening the nested cursor|not authorized on", "kind": "permission"},
+    {"pattern": "collection '[^']*' does not exist", "kind": "collection_missing"},
+    {"pattern": "not a valid MongoDB URI", "kind": "srv_lookup"},
+    {"pattern": "is VARCHAR\\(2000000\\)", "kind": "document_too_large"},
     {"pattern": "MongoDB error while reading collection metadata", "kind": "login_or_connection"}
   ],
   "messages": {
     "login_or_connection": {"message": "MongoDB refused the connection or the login (the adapter does not say which).",
-                            "hint": "Check, in this order: the user ({user}) and its password, and that it is defined in the authentication database ({auth_source}); TLS - a MongoDB on this machine or a private network without TLS needs --tls none, one with TLS needs a certificate from a public authority; and that {host}:{port} answers from inside the database container."},
+                            "hint": "Check, in this order: the user ({user}) and its password - the user must be defined in the admin database, where the adapter logs in; TLS - a MongoDB on this machine or a private network without TLS needs --tls none, one with TLS needs a certificate from a public authority; and that {host}:{port} answers from inside the database container."},
     "auth": {"message": "MongoDB refused the user name or password.",
-             "hint": "Check the user ({user}), its password, and the authentication database ({auth_source}): the user must be defined there and be allowed to read {database}."},
+             "hint": "Check the user ({user}) and its password. The adapter logs in against the admin database, so the user must be defined there and be allowed to read {database}."},
     "permission": {"message": "User {user} may not read {database}.{collection}.",
-                   "hint": "Grant the user the read role on {database}, then: exakit source check {name|lower}"}
+                   "hint": "Grant the user the read role on {database}, then: exakit source check {name|lower}"},
+    "collection_missing": {"message": "MongoDB has no collection {database}.{collection}.",
+                           "hint": "Check the name (it is case-sensitive). To point this source at another collection: set EXAKIT_VS_COLLECTION and run exakit connect mongodb --name {name|lower} (no password needed)."},
+    "srv_lookup": {"message": "The database could not look up the mongodb+srv records of {host}.",
+                   "hint": "Check the cluster's host name. If DNS SRV lookups are blocked here, use one member's mongodb://host:27017 address from the Atlas console instead."},
+    "document_too_large": {"message": "A document in {database}.{collection} is larger than the adapter can read (2,000,000 characters).",
+                           "hint": "This adapter version cannot read the collection as a whole; connect a view or a collection without such documents."}
   },
   "notes": [
     "One collection is one virtual schema: the documents form a root table (the MongoDB _id is mongo_id), a nested object becomes a child table joined on root.\"<field>|object\" = child.\"_id\", and an array becomes <ROOT>_<field>_arr joined on \"_parent\" = root.\"_id\" (position \"_pos\", value \"_value\").",
     "Child tables and fields keep their MongoDB spelling: quote them, e.g. VS_X.\"PEOPLE_profile\".\"city\".",
-    "Columns are inferred from a sample of up to 100 documents; after the collection's shape changes, run: exakit source refresh <name>.",
+    "Columns are inferred from a sample of up to 100 documents; after the collection's shape changes, run: exakit source refresh <name>. A collection renamed or dropped at the source reads as empty until then.",
+    "The user must be defined in MongoDB's admin database: the adapter logs in there whatever the URI says.",
     "Filters, projections, LIMIT and aggregates run in MongoDB; nothing is copied into Exasol."
   ]
 }

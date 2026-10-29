@@ -7,7 +7,10 @@ metadata, the Databricks JDBC driver for the rows.
     closes that gap by pinning: when connecting, it reads the workspace's
     certificate from THIS machine with full verification (CA chain and host
     name), and writes that certificate's SHA-256 into the adapter script,
-    patched to refuse any other certificate. The script is therefore the
+    patched to refuse any other certificate; the patched handshake sends the
+    host name (SNI) as the PC does, so both see the same certificate, and a
+    renewed certificate is re-read, verified and re-pinned by `source check`.
+    The script is therefore the
     source's own (adapter.script_scope "source").
   - The rows travel through the database's import process and the
     Databricks JDBC driver, whose Java trust store is empty on Exasol
@@ -78,6 +81,10 @@ def prepare(connector, inputs):
     except ssl.SSLCertVerificationError as e:
         raise plan.PlanError("The certificate of %s could not be verified from this PC (%s); the kit only "
                              "pins a certificate it could verify." % (host, e.verify_message))
+    except ssl.SSLError as e:
+        # Any other TLS failure: never leave an empty pin behind it.
+        raise plan.PlanError("The TLS handshake with %s failed from this PC (%s); the kit pins only a "
+                             "certificate it could read and verify." % (host, e.reason or e))
     except OSError:
         return {}  # the probe that follows explains the network failure
     return {"fingerprint": hashlib.sha256(der).hexdigest()}
@@ -86,7 +93,8 @@ def prepare(connector, inputs):
 _HANDSHAKE = """            socket.try(self.c:dohandshake())
             return 1"""
 
-_PINNED = """            socket.try(self.c:dohandshake())
+_PINNED = """            pcall(function() self.c:sni(host) end)
+            socket.try(self.c:dohandshake())
             local exakit_cert = self.c:getpeercertificate()
             local exakit_got = exakit_cert and string.lower(exakit_cert:digest("sha256")) or ""
             if not EXAKIT_PINS[exakit_got] then
