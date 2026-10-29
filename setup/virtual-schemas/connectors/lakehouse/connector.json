@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "id": "lakehouse",
+  "label": "Lakehouse (Iceberg, Unity Catalog)",
+  "aliases": ["iceberg", "lake", "unity", "unity-catalog"],
+  "runtime": "rust",
+  "adapter": {
+    "repo": "exasol-labs/lakehouse-engine-rs",
+    "version": "0.57.2",
+    "license": "MIT",
+    "runtime_version": "0.33.0",
+    "script_name": "LAKEHOUSE_ADAPTER",
+    "extract": "udf/liblakehouse_engine.so",
+    "assets": {
+      "x86_64": {
+        "file": "lakehouse-engine.tar.gz",
+        "url": "https://github.com/exasol-labs/lakehouse-engine-rs/releases/download/v0.57.2/lakehouse-engine.tar.gz",
+        "sha256": "2484cb32d10b066cc17f4928446b13d20dfb1bfad80e98c8518ea253c81bb17c"
+      },
+      "aarch64": {
+        "file": "lakehouse-engine-aarch64.tar.gz",
+        "url": "https://github.com/exasol-labs/lakehouse-engine-rs/releases/download/v0.57.2/lakehouse-engine-aarch64.tar.gz",
+        "sha256": "bb120f291c248b0e04d2fe476021e8269da65a1cb342328011c62f84f6072886"
+      }
+    }
+  },
+  "driver": null,
+  "scripts": [
+    {"name": "LAKEHOUSE_SCAN",
+     "sql": "CREATE OR REPLACE RUST SCALAR SCRIPT {schema}.LAKEHOUSE_SCAN(common VARCHAR(2000000), files VARCHAR(2000000))\nEMITS (...) AS\n%udf_object {udf_object}\n/"},
+    {"name": "LAKEHOUSE_VERSION",
+     "sql": "CREATE OR REPLACE RUST SCALAR SCRIPT {schema}.LAKEHOUSE_VERSION()\nRETURNS VARCHAR(100) AS\n%udf_object {udf_object}\n/"},
+    {"name": "LAKEHOUSE_DISTRIBUTE_FILES",
+     "sql": "CREATE OR REPLACE LUA SET SCRIPT {schema}.LAKEHOUSE_DISTRIBUTE_FILES(files VARCHAR(2000000))\nEMITS (files VARCHAR(2000000)) AS\nfunction run(ctx)\n    repeat\n        ctx.emit(ctx.files)\n    until not ctx.next()\nend\n/"}
+  ],
+  "secret_label": "S3 secret key, or catalog token",
+  "url": {
+    "scheme": "https://",
+    "alt_schemes": ["http://"],
+    "default_port": 8181
+  },
+  "inputs": [
+    {"id": "host", "label": "Catalog host", "required": true, "example": "iceberg-rest.example.com"},
+    {"id": "port", "label": "Catalog port", "type": "port", "default": 8181},
+    {"id": "path", "label": "Catalog URL path (optional)"},
+    {"id": "catalog", "label": "Catalog type: iceberg or unity", "default": "iceberg", "connection": false},
+    {"id": "namespace", "label": "Namespace (Unity Catalog: catalog.schema)", "required": true, "connection": false},
+    {"id": "warehouse", "label": "Warehouse (Iceberg REST; e.g. s3://warehouse/)"},
+    {"id": "endpoint", "label": "S3-compatible storage endpoint (optional, e.g. http://minio:9000)"},
+    {"id": "region", "label": "Storage region", "default": "us-east-1"},
+    {"id": "user", "label": "S3 access key ID (empty: a catalog token with vended credentials)"},
+    {"id": "password", "label": "S3 secret key, or catalog token", "secret": true, "required": true}
+  ],
+  "properties": {},
+  "tls": {
+    "param": "scheme",
+    "default": "verify",
+    "levels": {
+      "verify": {"params": {"scheme": "https"}},
+      "none": {"params": {"scheme": "http"}}
+    },
+    "from_url": {"https": "verify", "http": "none"}
+  },
+  "check": {"kind": "vs"},
+  "notes": [
+    "Table and column names arrive upper-cased (ORDERS, ORDER_ID): query them without quotes.",
+    "Iceberg tables with equality deletes, or ORC or Avro data files, are not read; positional deletes and deletion vectors are.",
+    "Filters, projections, LIMIT and aggregates run inside the Rust scan; nothing is copied into Exasol."
+  ]
+}

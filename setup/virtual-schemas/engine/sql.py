@@ -46,7 +46,13 @@ def object_names(name):
     return {"connection": "EXAKIT_SRC_%s" % n, "schema": "VS_%s" % n}
 
 
-def adapter_script_name(connector_id, version):
+def adapter_script_name(connector_id, version, fixed=None):
+    """Versioned (POSTGRESQL_4_1_0), so an upgrade sits beside the old
+    version - unless the adapter dictates its name: a native library is
+    found by an entry point named after the script (LAKEHOUSE_ADAPTER ->
+    __exa_udf_entry_LAKEHOUSE_ADAPTER), so its script name is fixed."""
+    if fixed:
+        return fixed
     return "%s_%s" % (connector_id.upper(), re.sub(r"[^A-Za-z0-9]", "_", version))
 
 
@@ -217,7 +223,9 @@ _KINDS = [
     ("tls_policy", r"security policy has prevented|SocketPermission"),
     # Native clients wrap a certificate failure in their network error
     # ("error sending request ... invalid peer certificate"): before network.
-    ("tls", r"invalid peer certificate|UnknownIssuer|certificate verify failed"),
+    # ...and TLS spoken to a plain-HTTP port reads as a corrupt message.
+    ("tls", r"invalid peer certificate|UnknownIssuer|certificate verify failed|"
+            r"corrupt message|InvalidContentType"),
     ("dns", r"UnknownHostException|Temporary failure in name resolution|Name or service not known|"
             r"dns error|failed to lookup address"),
     ("schema_missing", r"NoSuchNamespace|Namespace does not exist|namespace \S+ (?:not found|does not exist)"),

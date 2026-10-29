@@ -18,7 +18,9 @@ What a connector.json can say beyond the JDBC basics:
                  (runtimes.json); lua is built into the database.
   adapter.assets per-architecture downloads ({"x86_64": {file, url, sha256},
                  "aarch64": {...}}) for native adapters; adapter.extract
-                 names the library inside an archive download.
+                 names the library inside an archive download;
+                 adapter.script_name fixes the adapter script's name (a
+                 native library's entry point is named after its script).
   scripts        companion scripts the adapter calls by name, as SQL
                  templates with {schema} and {udf_object}; they live in the
                  kit's adapter schema and go with the connector's last adapter.
@@ -26,7 +28,7 @@ What a connector.json can say beyond the JDBC basics:
                  proven: an IMPORT through it, or (vs) a throwaway virtual
                  schema for adapters with no JDBC side.
 
-Hooks: parse_url, build_url, extra_connections, properties, prepare,
+Hooks: parse_url, build_url, extra_connections, properties, prepare, validate,
 connection_user and connection_secret (what the CONNECTION's USER and
 IDENTIFIED BY hold, when that is not user + password), adapter_source (a
 Lua adapter's source, patched before it goes into the script).
@@ -268,6 +270,11 @@ def validate(connector, inputs):
     v["name"] = sql.validate_name(v.get("name"))
     if v.get("tls") and v["tls"] not in TLS_LABELS:
         raise PlanError("EXAKIT_VS_TLS must be verify, encrypt or none (got %r)" % v["tls"])
+    fn = hook(connector, "validate")
+    if fn:
+        # Rules that depend on other answers (Lakehouse: a warehouse only on
+        # the Iceberg route). Raises PlanError.
+        v = fn(connector, v) or v
     return v
 
 
@@ -390,7 +397,7 @@ def build_plan(connector, inputs, facts):
     adapter_schema_foreign, script_exists."""
     names = sql.object_names(inputs["name"])
     ad = adapter(connector)
-    script = sql.adapter_script_name(connector["id"], ad["version"])
+    script = sql.adapter_script_name(connector["id"], ad["version"], ad.get("script_name"))
     drv = driver(connector)
     kind = runtime_kind(connector)
     rt_label = RUNTIME_LABELS.get(kind, kind)

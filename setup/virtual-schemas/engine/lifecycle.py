@@ -309,7 +309,7 @@ def gather_facts(ctx, connector, inputs, dry_run=False):
     db, rt = ctx.db, ctx.rt
     names = sql.object_names(inputs["name"])
     ad = plan.adapter(connector)
-    script = sql.adapter_script_name(connector["id"], ad["version"])
+    script = sql.adapter_script_name(connector["id"], ad["version"], ad.get("script_name"))
     exa = rt.exa_root
     adapter_cache = state.cache_dir() / ad["sha256"] / ad["file"]
     staged = exa / artifacts.BUCKET_DIR / artifacts.bucket_rel(connector) / ad["stage_name"]
@@ -586,7 +586,7 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
                     ctx.db.run(sql.create_connection(staging + suffix, target, user, secret), fetch=False)
                     ctx.db.run(sql.comment_connection(staging + suffix), fetch=False)
                 try:
-                    _probe(ctx, connector, staging, cfg, host)
+                    _probe(ctx, connector, staging, dict(cfg, tls=level), host)
                 except sql.SqlError as e:
                     last = e
                     state.log("INFO", "probe %s failed: %s" % (host, e.kind))

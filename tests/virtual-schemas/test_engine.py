@@ -422,17 +422,24 @@ class Connectors(unittest.TestCase):
     def test_shape(self):
         for cid, c in plan.load_connectors().items():
             with self.subTest(connector=cid):
-                for key in ("id", "label", "adapter", "driver", "script", "url", "inputs", "properties", "tls", "check"):
+                for key in ("id", "label", "adapter", "driver", "url", "inputs", "properties", "tls", "check"):
                     self.assertIn(key, c)
                 drv = plan.driver(c)
-                for art in [c["adapter"]] + ([drv] if drv else []):
+                arches = sorted(c["adapter"]["assets"]) if c["adapter"].get("assets") else [None]
+                for art in [plan.adapter(c, a) for a in arches] + ([drv] if drv else []):
                     self.assertRegex(art["sha256"], r"^[0-9a-f]{64}$")
                     self.assertTrue(art["url"].startswith("https://"))
                 if drv:
                     s = drv["settings"]
                     self.assertTrue(s["DRIVERNAME"].startswith("EXAKIT_"))
                     self.assertEqual(s.get("NOSECURITY"), "YES")
-                self.assertIn("-Duser.timezone=UTC", c["script"]["jvm_options"])
+                if plan.runtime_kind(c) == "java":
+                    self.assertIn("-Duser.timezone=UTC", c["script"]["jvm_options"])
+                if plan.runtime_kind(c) == "rust":
+                    # A native adapter only loads in the runtime version it was
+                    # built for: the connector and runtimes.json must agree.
+                    self.assertEqual(c["adapter"]["runtime_version"], plan.load_runtimes()["rust"]["version"])
+                    self.assertEqual(arches, ["aarch64", "x86_64"])
                 self.assertIn(c["tls"]["default"], c["tls"]["levels"])
                 for f in c["inputs"]:
                     self.assertIn("label", f)
@@ -441,9 +448,9 @@ class Connectors(unittest.TestCase):
         names = [plan.driver(c)["settings"]["DRIVERNAME"] for c in plan.load_connectors().values() if plan.driver(c)]
         self.assertEqual(len(names), len(set(names)))
 
-    def test_all_six_present(self):
+    def test_all_present(self):
         self.assertEqual(sorted(plan.load_connectors()),
-                         ["exasol", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
+                         ["exasol", "lakehouse", "mysql", "oracle", "postgresql", "snowflake", "sqlserver"])
 
 
 CS = plan.load_connectors()
@@ -683,6 +690,62 @@ class Runtimes(unittest.TestCase):
         self.assertEqual(plan.connection_user(PG, {"user": "u"}), "u")
         self.assertEqual(plan.connection_user(_native_connector(), {}), "")
         self.assertEqual(plan.connection_secret(PG, {}, "pw"), "pw")
+
+
+class Lakehouse(unittest.TestCase):
+    LH = CS["lakehouse"]
+    BASE = {"name": "LAKE", "host": "localhost", "port": 18181, "catalog": "iceberg", "namespace": "shop",
+            "warehouse": "s3://warehouse/", "endpoint": "http://localhost:19000", "region": "us-east-1",
+            "user": "lhadmin"}
+
+    def test_url_and_tls(self):
+        f, notes = plan.parse_url(self.LH, "http://localhost:18181")
+        self.assertEqual((f["host"], f["port"], f["params"]), ("localhost", 18181, {"scheme": "http"}))
+        merged = plan.merge_url(self.LH, {"url": "http://localhost:18181"}, [])
+        self.assertEqual((merged["tls"], merged["params"]), ("none", {}))
+        merged = plan.merge_url(self.LH, {"url": "https://dbc-1.cloud.databricks.com"}, [])
+        self.assertEqual((merged["port"], merged["tls"]), (443, "verify"))
+        self.assertEqual(plan.build_url(self.LH, "dbc-1.cloud.databricks.com", dict(self.BASE, port=443), "verify"),
+                         "https://dbc-1.cloud.databricks.com")
+        self.assertEqual(plan.build_url(self.LH, "host.containers.internal", self.BASE, "none"),
+                         "http://host.containers.internal:18181")
+        self.assertEqual(plan.tls_start(self.LH, "public", None), "verify")
+        with self.assertRaises(plan.PlanError):
+            plan.tls_start(self.LH, "public", "none")
+
+    def test_secret_document(self):
+        doc = json.loads(plan.connection_secret(self.LH, self.BASE, "s3cretKEY"))
+        self.assertEqual(doc, {"warehouse": "s3://warehouse/", "access_key": "lhadmin", "secret_key": "s3cretKEY",
+                               "region": "us-east-1", "endpoint": "http://host.containers.internal:19000",
+                               "path_style": True})
+        self.assertEqual(plan.connection_user(self.LH, self.BASE), "")
+        unity = dict(self.BASE, catalog="unity", namespace="main.sales", user=None, endpoint=None)
+        self.assertEqual(json.loads(plan.connection_secret(self.LH, unity, "dapiTOKEN")),
+                         {"token": "dapiTOKEN", "use_vended_credentials": True})
+
+    def test_properties(self):
+        props = plan.vs_properties(self.LH, {"connection": "C"}, dict(self.BASE, tls="none"))
+        self.assertEqual(props, {"CATALOG_CONNECTION": "C", "NAMESPACE": "shop", "ALLOW_HTTP": "true"})
+        unity = dict(self.BASE, catalog="unity", namespace="main.sales", endpoint=None, tls="verify")
+        self.assertEqual(plan.vs_properties(self.LH, {"connection": "C"}, unity),
+                         {"CATALOG_CONNECTION": "C", "NAMESPACE": "main.sales", "CATALOG_KIND": "UNITY_CATALOG"})
+
+    def test_validate(self):
+        v = plan.validate(self.LH, dict(self.BASE, catalog="Unity", namespace="main.sales"))
+        self.assertEqual(v["catalog"], "unity")
+        for bad in (dict(self.BASE, warehouse=None), dict(self.BASE, catalog="glue"),
+                    dict(self.BASE, catalog="unity", namespace="nodot"), dict(self.BASE, endpoint="minio:9000")):
+            with self.assertRaises(plan.PlanError):
+                plan.validate(self.LH, bad)
+
+    def test_plan(self):
+        p = plan.build_plan(self.LH, self.BASE, {"runtime": "rust", "runtime_installed": True,
+                                                 "runtime_active": True, "runtime_conflict": None})
+        steps = [s["step"] for s in p["steps"]]
+        self.assertNotIn("driver", steps)
+        self.assertNotIn("dns", steps)
+        self.assertFalse(p["restart_needed"])
+        self.assertEqual(p["objects"]["script"], "EXAKIT_VS.LAKEHOUSE_ADAPTER")
 
 
 class UiTwin(unittest.TestCase):
