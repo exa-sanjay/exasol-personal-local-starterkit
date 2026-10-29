@@ -112,6 +112,36 @@ def fetch(spec, ui=None):
     return target
 
 
+def payload(spec, path):
+    """The file to stage from a verified download: the download itself, or -
+    for an archive (spec "extract": "udf/lib.so") - that one member, unpacked
+    next to it in the cache. Only the named member is read, and only as a
+    regular file: no other path in the archive is ever written."""
+    member = spec.get("extract")
+    if not member:
+        return path
+    out = Path(path).parent / "extracted" / Path(member).name
+    if out.is_file():
+        return out
+    import tarfile
+    try:
+        with tarfile.open(path, "r:*") as t:
+            info = t.getmember(member)
+            if not info.isfile():
+                raise ArtifactError("%s in %s is not a regular file" % (member, spec["file"]), "checksum")
+            src = t.extractfile(info)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            tmp = out.with_name(out.name + ".part-%d" % os.getpid())
+            with open(tmp, "wb") as f:
+                shutil.copyfileobj(src, f)
+            os.replace(tmp, out)
+    except KeyError:
+        raise ArtifactError("%s does not contain %s" % (spec["file"], member), "checksum")
+    except (tarfile.TarError, OSError) as e:
+        raise ArtifactError("could not unpack %s from %s: %s" % (member, spec["file"], e))
+    return out
+
+
 def _digest(path, algo):
     h = hashlib.new(algo)
     with open(path, "rb") as f:
@@ -130,6 +160,12 @@ def _copy_atomic(src, dest):
     return True
 
 
+def udf_object(bucket, file_name):
+    """How a native script names its library: bucket-relative, no leading
+    slash (as the Lakehouse installer writes it, proven in the Phase-6 spike)."""
+    return "%s/%s/%s" % (BUCKET_PREFIX.lstrip("/"), bucket, file_name)
+
+
 def bucket_rel(connector, version=None):
     return Path(KIT_BUCKET) / connector["id"] / (version or connector["adapter"]["version"])
 
@@ -138,11 +174,14 @@ def describe(connector):
     """What a source built from this connector right now records about its
     artifacts - so it can later be checked and removed by what it USES, not
     by whatever the connector pins after a kit update."""
+    from . import plan
     drv = connector.get("driver") if (connector.get("driver") or {}).get("settings") else None
+    ad = plan.adapter(connector)
     return {
-        "adapter_key": "%s/%s" % (connector["id"], connector["adapter"]["version"]),
-        "adapter_version": connector["adapter"]["version"],
-        "adapter_file": connector["adapter"]["file"],
+        "adapter_key": "%s/%s" % (connector["id"], ad["version"]),
+        "adapter_version": ad["version"],
+        "adapter_file": ad["stage_name"],
+        "runtime": plan.runtime_kind(connector),
         "bucket": bucket_rel(connector).as_posix(),
         "driver_name": drv["settings"]["DRIVERNAME"] if drv else None,
         "driver_file": drv["file"] if drv else None,
@@ -225,6 +264,9 @@ def load_registry():
     reg.setdefault("schema_version", 1)
     reg.setdefault("adapters", {})
     reg.setdefault("drivers", {})
+    # Custom runtimes the KIT installed, with the version it put in: the
+    # launcher records the alias and the source file, not a version.
+    reg.setdefault("runtimes", {})
     return reg
 
 

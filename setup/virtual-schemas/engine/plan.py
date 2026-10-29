@@ -10,6 +10,26 @@ an optional hooks.py says what cannot - a URL shape the generic parser does
 not know (SQL Server's ;databaseName=, Oracle's @//host/service), extra
 connection objects (Exasol's EXA connection), properties that depend on the
 host. Every hook has a generic default here, so most connectors need none.
+
+What a connector.json can say beyond the JDBC basics:
+
+  runtime        java (default) | rust | lua - which script language the
+                 adapter runs in. rust uses the kit's pinned custom SLC
+                 (runtimes.json); lua is built into the database.
+  adapter.assets per-architecture downloads ({"x86_64": {file, url, sha256},
+                 "aarch64": {...}}) for native adapters; adapter.extract
+                 names the library inside an archive download.
+  scripts        companion scripts the adapter calls by name, as SQL
+                 templates with {schema} and {udf_object}; they live in the
+                 kit's adapter schema and go with the connector's last adapter.
+  check.kind     jdbc (default) | exa | vs - how a candidate connection is
+                 proven: an IMPORT through it, or (vs) a throwaway virtual
+                 schema for adapters with no JDBC side.
+
+Hooks: parse_url, build_url, extra_connections, properties, prepare,
+connection_user and connection_secret (what the CONNECTION's USER and
+IDENTIFIED BY hold, when that is not user + password), adapter_source (a
+Lua adapter's source, patched before it goes into the script).
 """
 
 import importlib.util
@@ -83,6 +103,73 @@ def driver(connector):
     (Exasol's own adapter reads through IMPORT FROM EXA instead)."""
     d = connector.get("driver")
     return d if d and d.get("settings") else None
+
+
+# --- runtimes and adapters -----------------------------------------------------------
+# A connector runs on one runtime: java (JAR adapters, the default), rust
+# (a native library in BucketFS, on the kit's pinned custom SLC) or lua
+# (adapter source inline in the script, built into the database).
+
+RUNTIMES_FILE = CONNECTORS_DIR.parent / "runtimes.json"
+
+
+def runtime_kind(connector):
+    return connector.get("runtime", "java")
+
+
+def load_runtimes(path=None):
+    with open(path or RUNTIMES_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def runtime_spec(kind, arch=None, runtimes=None):
+    """The pinned custom-SLC download for `kind` on this architecture, or None
+    for a runtime that is not custom (java, lua)."""
+    if kind not in ("rust",):
+        return None
+    rt = (runtimes or load_runtimes())[kind]
+    asset = rt["assets"].get(arch or _arch())
+    if not asset:
+        raise PlanError("the %s runtime has no build for this machine's architecture (%s)"
+                        % (kind, arch or _arch()))
+    return dict(asset, alias=rt["alias"], language=rt["language"], version=rt["version"],
+                license=rt.get("license"))
+
+
+def _arch():
+    from . import runtime
+    return runtime.db_arch()
+
+
+def adapter(connector, arch=None):
+    """The adapter artifact for this machine: the connector's adapter block,
+    with a per-architecture asset (native adapters) merged in. stage_name is
+    the file that lands in BucketFS - the archive member for a .tar.gz."""
+    a = dict(connector["adapter"])
+    assets = a.pop("assets", None)
+    if assets:
+        asset = assets.get(arch or _arch())
+        if not asset:
+            raise PlanError("%s has no build for this machine's architecture (%s)"
+                            % (connector["label"], arch or _arch()))
+        a.update(asset)
+    a["stage_name"] = Path(a["extract"]).name if a.get("extract") else a["file"]
+    return a
+
+
+def connection_user(connector, inputs):
+    """What goes into the CONNECTION's USER: the source user by default; a
+    connector whose secret is not a password says otherwise (Databricks:
+    'token'; Lakehouse: '')."""
+    fn = hook(connector, "connection_user")
+    return fn(connector, inputs) if fn else (inputs.get("user") or "")
+
+
+def connection_secret(connector, inputs, password):
+    """What goes into IDENTIFIED BY: the password by default; a hook can wrap
+    it (Lakehouse: a JSON document of storage settings and keys)."""
+    fn = hook(connector, "connection_secret")
+    return fn(connector, inputs, password) if fn else password
 
 
 # --- inputs -----------------------------------------------------------------------
@@ -281,20 +368,32 @@ def vs_properties(connector, names, inputs, host=None):
     return props
 
 
+RUNTIME_LABELS = {"java": "Java", "rust": "Rust", "lua": "Lua"}
+
+
 def restart_needed(facts):
-    """Java recorded but not active (a run interrupted between the install and
-    the restart) needs the restart just as much as Java never installed."""
-    return not facts.get("java_installed") or facts.get("java_active") is False
+    """A runtime recorded but not active (a run interrupted between the
+    install and the restart) needs the restart just as much as one never
+    installed; so does a custom runtime being replaced. Lua is built in."""
+    if facts.get("runtime", "java") == "lua":
+        return False
+    return (not facts.get("runtime_installed") or facts.get("runtime_active") is False
+            or bool(facts.get("runtime_conflict")))
 
 
 def build_plan(connector, inputs, facts):
-    """facts: java_installed, java_active (True|False|None=unknown),
-    adapter_cached, driver_cached, adapter_staged, driver_registered,
-    dns (ok|missing|unknown|inactive), connection_exists, connection_owned,
-    schema_exists, schema_owned, adapter_schema_foreign, script_exists."""
+    """facts: runtime (java|rust|lua), runtime_installed, runtime_active
+    (True|False|None=unknown), runtime_conflict (the other version a custom
+    runtime has, or None), adapter_cached, driver_cached, adapter_staged,
+    driver_registered, dns (ok|missing|unknown|inactive|n/a),
+    connection_exists, connection_owned, schema_exists, schema_owned,
+    adapter_schema_foreign, script_exists."""
     names = sql.object_names(inputs["name"])
-    script = sql.adapter_script_name(connector["id"], connector["adapter"]["version"])
+    ad = adapter(connector)
+    script = sql.adapter_script_name(connector["id"], ad["version"])
     drv = driver(connector)
+    kind = runtime_kind(connector)
+    rt_label = RUNTIME_LABELS.get(kind, kind)
     steps = []
 
     def add(key, text, needed=True, consent=False):
@@ -311,26 +410,42 @@ def build_plan(connector, inputs, facts):
         raise PlanError("a schema named %s exists and was not created by the kit; the kit will not "
                         "put its adapter scripts there" % sql.ADAPTER_SCHEMA)
 
-    add("java", "Install the Java runtime in the database (exasol slc install java)",
-        not facts.get("java_installed"), consent=True)
-    what = "%s adapter %s" % (connector["label"], connector["adapter"]["version"])
+    if kind == "java":
+        add("runtime", "Install the Java runtime in the database (exasol slc install java)",
+            not facts.get("runtime_installed"), consent=True)
+    elif kind != "lua":
+        spec = runtime_spec(kind)
+        if facts.get("runtime_conflict"):
+            text = "Replace the %s runtime %s with %s (custom SLC %s)" % (
+                rt_label, facts["runtime_conflict"], spec["version"], spec["alias"])
+        else:
+            text = "Install the %s runtime %s in the database (custom SLC %s)" % (
+                rt_label, spec["version"], spec["alias"])
+        add("runtime", text, not facts.get("runtime_installed") or bool(facts.get("runtime_conflict")),
+            consent=True)
+    what = "%s adapter %s" % (connector["label"], ad["version"])
     if drv:
         what += " and %s %s" % (drv["name"], drv["version"])
     add("download", "Download and verify " + what,
         not (facts.get("adapter_cached") and (facts.get("driver_cached") or not drv)))
-    add("stage", "Stage the adapter in BucketFS (exakit-vs/%s/%s)" % (
-        connector["id"], connector["adapter"]["version"]), not facts.get("adapter_staged"))
+    if kind != "lua":
+        add("stage", "Stage the adapter in BucketFS (exakit-vs/%s/%s)" % (connector["id"], ad["version"]),
+            not facts.get("adapter_staged"))
     if drv:
         add("driver", "Register the JDBC driver %s" % drv["settings"]["DRIVERNAME"],
             not facts.get("driver_registered"))
-    add("restart", "Restart the database once, to activate the Java runtime",
+    add("restart", "Restart the database once, to activate the %s runtime" % rt_label,
         restart_needed(facts), consent=True)
-    add("dns", "Link name resolution into the Java sandbox (temporary workaround)",
-        facts.get("dns") != "ok")
-    add("connection", "Create connection %s (password stored only there)" % names["connection"])
-    add("probe", "Test the source and its schema from inside the database")
-    add("script", "Create adapter script %s.%s" % (sql.ADAPTER_SCHEMA, script),
+    if kind == "java":
+        add("dns", "Link name resolution into the Java sandbox (temporary workaround)",
+            facts.get("dns") != "ok")
+    add("connection", "Create connection %s (%s stored only there)" % (
+        names["connection"], connector.get("secret_label", "password").lower()))
+    companions = [s["name"] for s in connector.get("scripts", [])]
+    add("script", "Create adapter script %s.%s%s" % (
+        sql.ADAPTER_SCHEMA, script, " and %s" % ", ".join(companions) if companions else ""),
         not facts.get("script_exists"))
+    add("probe", "Test the source and its schema from inside the database")
     add("schema", "%s virtual schema %s" % (
         "Refresh" if facts.get("schema_exists") else "Create", names["schema"]))
     add("verify", "Read real rows through the virtual schema")

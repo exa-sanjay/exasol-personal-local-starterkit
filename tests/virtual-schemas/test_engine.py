@@ -277,10 +277,15 @@ class Changes(unittest.TestCase):
         self.assertEqual(plan.changed_fields(PG, self.SAVED, dict(self.SAVED, schema="other"), "encrypt"), [])
 
     def test_restart_needed(self):
-        self.assertTrue(plan.restart_needed({"java_installed": False}))
-        self.assertTrue(plan.restart_needed({"java_installed": True, "java_active": False}))
-        self.assertFalse(plan.restart_needed({"java_installed": True, "java_active": None}))
-        self.assertFalse(plan.restart_needed({"java_installed": True, "java_active": True}))
+        self.assertTrue(plan.restart_needed({"runtime_installed": False}))
+        self.assertTrue(plan.restart_needed({"runtime_installed": True, "runtime_active": False}))
+        self.assertFalse(plan.restart_needed({"runtime_installed": True, "runtime_active": None}))
+        self.assertFalse(plan.restart_needed({"runtime_installed": True, "runtime_active": True}))
+        # A custom runtime of the wrong version is replaced: one restart.
+        self.assertTrue(plan.restart_needed({"runtime": "rust", "runtime_installed": True,
+                                             "runtime_active": True, "runtime_conflict": "0.32.0"}))
+        # Lua is built into the database.
+        self.assertFalse(plan.restart_needed({"runtime": "lua"}))
 
 
 class PasswordFile(unittest.TestCase):
@@ -371,13 +376,14 @@ class Plan(unittest.TestCase):
     def test_fresh_machine(self):
         p = plan.build_plan(PG, self.INPUTS, {})
         needed = [s["step"] for s in p["steps"] if s["needed"]]
-        self.assertEqual(needed, ["java", "download", "stage", "driver", "restart", "dns", "connection",
-                                  "probe", "script", "schema", "verify"])
+        self.assertEqual(needed, ["runtime", "download", "stage", "driver", "restart", "dns", "connection",
+                                  "script", "probe", "schema", "verify"])
         self.assertTrue(p["restart_needed"])
         self.assertEqual(p["objects"]["script"], "EXAKIT_VS.POSTGRESQL_4_1_0")
+        self.assertIn("Java", [s for s in p["steps"] if s["step"] == "runtime"][0]["action"])
 
     def test_second_source_needs_no_restart(self):
-        facts = {"java_installed": True, "java_active": True, "adapter_cached": True,
+        facts = {"runtime": "java", "runtime_installed": True, "runtime_active": True, "adapter_cached": True,
                  "driver_cached": True, "adapter_staged": True, "driver_registered": True,
                  "dns": "ok", "script_exists": True}
         p = plan.build_plan(PG, self.INPUTS, facts)
@@ -386,7 +392,7 @@ class Plan(unittest.TestCase):
                          ["connection", "probe", "schema", "verify"])
 
     def test_installed_but_inactive_java_restarts(self):
-        p = plan.build_plan(PG, self.INPUTS, {"java_installed": True, "java_active": False})
+        p = plan.build_plan(PG, self.INPUTS, {"runtime_installed": True, "runtime_active": False})
         self.assertTrue(p["restart_needed"])
 
     def test_refuses_foreign_objects(self):
@@ -551,6 +557,132 @@ class OtherConnectors(unittest.TestCase):
         self.assertEqual(plan.render("{a|upper}-{b|lower}-{c}", {"a": "x", "b": "Y", "c": None}), "X-y-")
         with self.assertRaises(plan.PlanError):
             plan.render("{a|nope}", {"a": "x"})
+
+
+def _native_connector(**kw):
+    """A fixture Rust connector shaped like Lakehouse: per-architecture
+    archives, a library inside, companion scripts, probed through the adapter."""
+    c = {
+        "id": "nativex", "label": "NativeX", "runtime": "rust",
+        "adapter": {"version": "1.2.3", "extract": "udf/libnativex.so", "assets": {
+            "x86_64": {"file": "nx.tar.gz", "url": "https://example.invalid/nx.tar.gz", "sha256": "a" * 64},
+            "aarch64": {"file": "nx-aarch64.tar.gz", "url": "https://example.invalid/nx-a.tar.gz", "sha256": "b" * 64}}},
+        "scripts": [{"name": "NX_SCAN", "sql": "CREATE OR REPLACE RUST SCALAR SCRIPT {schema}.NX_SCAN(x VARCHAR(10)) "
+                                               "EMITS (...) AS\n%udf_object {udf_object}\n/"}],
+        "url": {"default_port": 8181}, "inputs": [{"id": "host", "label": "Host", "required": True}],
+        "properties": {}, "tls": {"default": "verify", "levels": {"verify": {}, "none": {}}},
+        "check": {"kind": "vs"},
+    }
+    c.update(kw)
+    return c
+
+
+class Runtimes(unittest.TestCase):
+    def test_runtime_pin_is_complete(self):
+        rt = plan.load_runtimes()["rust"]
+        self.assertEqual(rt["alias"], "RUST")
+        for arch in ("x86_64", "aarch64"):
+            spec = plan.runtime_spec("rust", arch)
+            self.assertRegex(spec["sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(spec["url"].startswith("https://"))
+            self.assertIn(spec["version"], spec["file"])
+        self.assertIsNone(plan.runtime_spec("java"))
+        self.assertIsNone(plan.runtime_spec("lua"))
+
+    def test_db_arch(self):
+        from engine import runtime
+        self.assertEqual(runtime.db_arch({"EXAKIT_VS_ARCH": "AMD64"}), "x86_64")
+        self.assertEqual(runtime.db_arch({"EXAKIT_VS_ARCH": "arm64"}), "aarch64")
+
+    def test_adapter_per_arch(self):
+        c = _native_connector()
+        a = plan.adapter(c, "aarch64")
+        self.assertEqual((a["file"], a["stage_name"], a["version"]), ("nx-aarch64.tar.gz", "libnativex.so", "1.2.3"))
+        with self.assertRaises(plan.PlanError):
+            plan.adapter(c, "riscv64")
+        self.assertEqual(plan.adapter(PG)["stage_name"], PG["adapter"]["file"])
+
+    def test_native_plan(self):
+        c = _native_connector()
+        p = plan.build_plan(c, {"name": "LAKE", "host": "h"}, {"runtime": "rust"})
+        steps = {s["step"]: s for s in p["steps"]}
+        self.assertNotIn("dns", steps)          # the Rust SLC resolves names itself
+        self.assertNotIn("driver", steps)
+        self.assertIn("Rust runtime", steps["runtime"]["action"])
+        self.assertIn("NX_SCAN", steps["script"]["action"])
+        self.assertTrue(p["restart_needed"])
+        p = plan.build_plan(c, {"name": "LAKE", "host": "h"},
+                            {"runtime": "rust", "runtime_installed": True, "runtime_active": True,
+                             "runtime_conflict": "0.32.0"})
+        self.assertIn("Replace the Rust runtime 0.32.0", [s for s in p["steps"] if s["step"] == "runtime"][0]["action"])
+
+    def test_lua_plan_needs_no_runtime_or_staging(self):
+        c = _native_connector(runtime="lua", adapter={"version": "1.0.2", "file": "a.lua", "url": "https://x/a.lua",
+                                                      "sha256": "c" * 64})
+        p = plan.build_plan(c, {"name": "DBX", "host": "h"}, {"runtime": "lua", "runtime_installed": True,
+                                                               "runtime_active": True})
+        steps = [s["step"] for s in p["steps"]]
+        self.assertNotIn("runtime", steps)
+        self.assertNotIn("stage", steps)
+        self.assertNotIn("dns", steps)
+        self.assertFalse(p["restart_needed"])
+
+    def test_script_sql(self):
+        s = sql.create_rust_adapter_script("NX_1_2_3", "buckets/bfsdefault/default/exakit-vs/nativex/1.2.3/libnativex.so")
+        self.assertEqual(s, 'CREATE OR REPLACE RUST ADAPTER SCRIPT "EXAKIT_VS"."NX_1_2_3" AS\n'
+                            '%udf_object buckets/bfsdefault/default/exakit-vs/nativex/1.2.3/libnativex.so\n/')
+        lua = sql.create_lua_adapter_script("DBX_1_0_2", "function adapter_call() end\n", "-- preamble")
+        self.assertTrue(lua.startswith('CREATE OR REPLACE LUA ADAPTER SCRIPT "EXAKIT_VS"."DBX_1_0_2" AS\n-- preamble\n'))
+        self.assertTrue(lua.endswith("function adapter_call() end\n/"))
+        comp = sql.companion_script(_native_connector()["scripts"][0]["sql"], "buckets/x/lib.so")
+        self.assertIn('"EXAKIT_VS".NX_SCAN', comp)
+        self.assertIn("%udf_object buckets/x/lib.so", comp)
+        self.assertEqual(artifacts.udf_object("exakit-vs/nativex/1.2.3", "libnativex.so"),
+                         "buckets/bfsdefault/default/exakit-vs/nativex/1.2.3/libnativex.so")
+
+    def test_payload_extracts_only_the_named_member(self):
+        import tarfile
+        with tempfile.TemporaryDirectory() as d:
+            arc = Path(d) / "nx.tar.gz"
+            with tarfile.open(arc, "w:gz") as t:
+                for name, data in (("udf/libnativex.so", b"ELF..."), ("../evil", b"x")):
+                    ti = tarfile.TarInfo(name)
+                    ti.size = len(data)
+                    t.addfile(ti, io.BytesIO(data))
+            out = artifacts.payload({"file": "nx.tar.gz", "extract": "udf/libnativex.so"}, arc)
+            self.assertEqual(out.read_bytes(), b"ELF...")
+            self.assertEqual(out.parent, Path(d) / "extracted")
+            self.assertFalse((Path(d).parent / "evil").exists())
+            with self.assertRaises(artifacts.ArtifactError):
+                artifacts.payload({"file": "nx.tar.gz", "extract": "udf/missing.so"}, arc)
+            self.assertEqual(artifacts.payload({"file": "a.jar"}, arc), arc)
+
+    def test_custom_runtime_version(self):
+        reg = {"runtimes": {"rust": {"version": "0.33.0", "file": "lc-rust-0.33.0.tar.gz"}}}
+        row = {"source": "C:\\tmp\\lc-rust-0.33.0.tar.gz"}
+        self.assertEqual(lifecycle._custom_runtime_version(row, "rust", reg), "0.33.0")
+        self.assertEqual(lifecycle._custom_runtime_version({"source": "/x/lc-rust-0.32.0.tar.gz"}, "rust",
+                                                           {"runtimes": {}}), "0.32.0")
+        self.assertIsNone(lifecycle._custom_runtime_version({"source": "/x/my-own.tar.gz"}, "rust",
+                                                            {"runtimes": {}}))
+
+    def test_native_failure_kinds(self):
+        tls = ("UDF error: catalog request failed: error sending request for url (https://x/v1/config): "
+               "client error (Connect): invalid peer certificate: certificate expired")
+        self.assertEqual(sql.classify(tls), "tls")
+        self.assertEqual(sql.classify("error sending request for url (http://10.0.0.9:8181/v1/config): "
+                                      "client error (Connect): tcp connect error: Connection refused"), "network")
+        self.assertEqual(sql.classify("client error (Connect): dns error: failed to lookup address information"),
+                         "dns")
+        self.assertEqual(sql.classify("catalog request failed with HTTP 401: Unauthorized"), "auth")
+        self.assertEqual(sql.classify("S3 error: InvalidAccessKeyId"), "auth")
+        self.assertEqual(sql.classify("Fingerprint mismatch: built for 0.32.0"), "runtime_mismatch")
+        self.assertEqual(sql.classify("NoSuchNamespaceException: Namespace does not exist: shop"), "schema_missing")
+
+    def test_connection_user_and_secret_defaults(self):
+        self.assertEqual(plan.connection_user(PG, {"user": "u"}), "u")
+        self.assertEqual(plan.connection_user(_native_connector(), {}), "")
+        self.assertEqual(plan.connection_secret(PG, {}, "pw"), "pw")
 
 
 class UiTwin(unittest.TestCase):

@@ -199,6 +199,29 @@ def main():
     rc, o, _ = run("connect", "--password", "x")
     check("--password is refused with the reason", rc == 2 and "deliberately" in o.get("error", ""), o)
 
+    # M5 and m2 drop the kit's shared objects by hand and delete its staged
+    # files: only safe when every source on this machine is a test source.
+    others = foreign_sources()
+    if others:
+        print("skip M5/m2: this machine has other sources (%s); those cases drop the kit's "
+              "shared adapter objects" % ", ".join(others))
+        for n in ("qa_m1", "qa_m2", "qa_m3", "qa_m7"):
+            run("source", "remove", n, "--yes")
+    else:
+        m5_cases()
+
+    if with_restart:
+        restart_cases()
+
+    Path(bad).unlink()
+    left = [p.name for p in (HOME / "sources").iterdir() if p.is_dir()] if (HOME / "sources").exists() else []
+    check("cleanup: no qa_ sources left", not [n for n in left if n.startswith("qa_")], left)
+    failed = [l for l, ok in RESULTS if not ok]
+    print("\n%d checks, %d failed" % (len(RESULTS), len(failed)))
+    return 1 if failed else 0
+
+
+def m5_cases():
     # M5: a foreign virtual schema on the kit's adapter script, and a user
     # table in EXAKIT_VS, never block removing the last source.
     for n in ("qa_m2", "qa_m3", "qa_m7"):
@@ -243,15 +266,12 @@ def main():
           not staged.exists() and run("source", "show", "qa_m2b")[0] == 2, staged)
     q1("DROP SCHEMA EXAKIT_VS")
 
-    if with_restart:
-        restart_cases()
 
-    Path(bad).unlink()
-    left = [p.name for p in (HOME / "sources").iterdir() if p.is_dir()] if (HOME / "sources").exists() else []
-    check("cleanup: no qa_ sources left", not [n for n in left if n.startswith("qa_")], left)
-    failed = [l for l, ok in RESULTS if not ok]
-    print("\n%d checks, %d failed" % (len(RESULTS), len(failed)))
-    return 1 if failed else 0
+def foreign_sources():
+    """Sources on this machine that are not this suite's qa_* ones."""
+    d = HOME / "sources"
+    return sorted(p.name for p in d.iterdir() if p.is_dir() and not p.name.startswith("qa_")) \
+        if d.is_dir() else []
 
 
 def forget_artifacts():

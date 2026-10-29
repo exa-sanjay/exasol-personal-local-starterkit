@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "_comment": "Script-language runtimes the connectors run on. java is Exasol Personal's official SLC (exasol slc install java); lua is built into the database; rust is a CUSTOM SLC the kit installs from this pin. Every Rust connector release only loads in one exact Rust SLC version (its fingerprint), so this pin and each Rust connector's runtime_version move together.",
+  "rust": {
+    "alias": "RUST",
+    "language": "rust",
+    "repo": "exasol-labs/language-container-rs",
+    "version": "0.33.0",
+    "license": "MIT",
+    "assets": {
+      "x86_64": {
+        "file": "lc-rust-0.33.0.tar.gz",
+        "url": "https://github.com/exasol-labs/language-container-rs/releases/download/v0.33.0/lc-rust-0.33.0.tar.gz",
+        "sha256": "eeedf5f2f8f7a4ad3a329065e516f93106412f270280bf47dede8e5023985245"
+      },
+      "aarch64": {
+        "file": "lc-rust-0.33.0-aarch64.tar.gz",
+        "url": "https://github.com/exasol-labs/language-container-rs/releases/download/v0.33.0/lc-rust-0.33.0-aarch64.tar.gz",
+        "sha256": "de311ae8acadd30579373820d00b92364866880c15bf2edf8284567a8aaa5f8e"
+      }
+    }
+  }
+}

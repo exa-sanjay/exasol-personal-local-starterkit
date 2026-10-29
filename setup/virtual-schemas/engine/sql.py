@@ -79,6 +79,27 @@ def create_adapter_script(script, script_class, jvm_options, jars):
     return "\n".join(lines)
 
 
+def create_rust_adapter_script(script, udf_object, alias="RUST"):
+    """A native adapter: the library in BucketFS, loaded by the custom SLC
+    registered under `alias`."""
+    return "CREATE OR REPLACE %s ADAPTER SCRIPT %s.%s AS\n%%udf_object %s\n/" % (
+        alias, ident(ADAPTER_SCHEMA), ident(script), udf_object)
+
+
+def create_lua_adapter_script(script, source, preamble=""):
+    """A Lua adapter carries its whole source in the script text."""
+    body = (preamble.rstrip("\n") + "\n" if preamble else "") + source.rstrip("\n")
+    return "CREATE OR REPLACE LUA ADAPTER SCRIPT %s.%s AS\n%s\n/" % (ident(ADAPTER_SCHEMA), ident(script), body)
+
+
+def companion_script(template, udf_object):
+    """A script an adapter calls by name (Lakehouse: its scan, version and
+    distribution scripts). The connector's template names the schema as
+    {schema} and the library as {udf_object}; such scripts must live in the
+    adapter's own schema."""
+    return template.replace("{schema}", ident(ADAPTER_SCHEMA)).replace("{udf_object}", udf_object)
+
+
 NET_PROBE = "SANDBOX_NET"
 
 
@@ -189,16 +210,26 @@ def _engine_message(e):
 
 _KINDS = [
     ("driver_not_registered", r"No default DRIVER registered|Driver=\S+ is unknown"),
-    ("slc_missing", r"unsupported script language|script language container"),
+    # A native adapter built for another Rust SLC version than the active one.
+    ("runtime_mismatch", r"Fingerprint mismatch"),
+    ("slc_missing", r"unsupported script language|script language container|"
+                    r"Script language \S+ is not (?:defined|available)"),
     ("tls_policy", r"security policy has prevented|SocketPermission"),
-    ("dns", r"UnknownHostException|Temporary failure in name resolution|Name or service not known"),
+    # Native clients wrap a certificate failure in their network error
+    # ("error sending request ... invalid peer certificate"): before network.
+    ("tls", r"invalid peer certificate|UnknownIssuer|certificate verify failed"),
+    ("dns", r"UnknownHostException|Temporary failure in name resolution|Name or service not known|"
+            r"dns error|failed to lookup address"),
+    ("schema_missing", r"NoSuchNamespace|Namespace does not exist|namespace \S+ (?:not found|does not exist)"),
     # Before tls: "SSL ... Connection reset" is the network dropping, and
     # reading it as a TLS failure would invite a needless TLS downgrade.
     ("network", r"Connection (?:to \S+ )?refused|Connection reset|No route to host|"
-                r"Network is unreachable|connect timed out"),
+                r"Network is unreachable|connect timed out|client error \(Connect\)|"
+                r"error sending request|operation timed out"),
     ("tls", r"SSL|PKIX|trustAnchors|certificate|does not support SSL|handshake"),
     ("auth", r"password authentication failed|authentication failed|Access denied for user|"
-             r"Login failed|ORA-01017|invalid username|role \S+ does not exist"),
+             r"Login failed|ORA-01017|invalid username|role \S+ does not exist|"
+             r"HTTP 401|HTTP 403|Unauthorized|InvalidAccessKeyId|SignatureDoesNotMatch|AccessDenied"),
     ("database_missing", r"database \S+ does not exist|Unknown database|Cannot open database"),
     ("permission", r"permission denied|insufficient privilege|not authorized"),
     ("mixed_case", r"E-VSPG-6|cannot be used in virtual schema"),

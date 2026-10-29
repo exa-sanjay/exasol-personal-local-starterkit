@@ -19,6 +19,7 @@ Rules every command here keeps:
 """
 
 import os
+import re
 import sys
 import time
 
@@ -48,6 +49,7 @@ def explain(kind, cfg, detail, first_time=False):
     where = "%s:%s" % (host, port)
     again = _connect_cmd(cfg)
     pw_hint = "Pass the password with --password-file <path> (or answer the prompt)."
+    rt = plan.RUNTIME_LABELS.get((cfg.get("artifacts") or {}).get("runtime", "java"), "Java")
     table = {
         "auth": ("The source refused the user name or password.",
                  again if first_time else "exakit source reauth %s" % name,
@@ -80,9 +82,12 @@ def explain(kind, cfg, detail, first_time=False):
                              "exakit source check %s" % name),
         "driver_not_registered": ("The JDBC driver registration is missing.",
                                   "exakit source check %s" % name, None),
-        "slc_missing": ("The Java runtime is not active in the database.",
+        "slc_missing": ("The %s runtime is not active in the database." % rt,
                         _connect_cmd(cfg, "--yes"),
                         "Activating it restarts the database once; --yes consents."),
+        "runtime_mismatch": ("The adapter was built for another %s runtime version than the one "
+                             "active in the database." % rt, _connect_cmd(cfg, "--yes"),
+                             "Connecting again installs the runtime version this kit pins (one restart)."),
         "mixed_case": ("The source has mixed-case table names the adapter refused.", None, None),
     }
     return table.get(kind, ("The source could not be used: %s" % detail, None, None))
@@ -246,15 +251,68 @@ def _ensure_dns(ctx, quiet=False):
 
 # --- facts about the database, for the plan -----------------------------------------------
 
+def _script_languages(ctx):
+    """The database's active SCRIPT_LANGUAGES. It lists JAVA, PYTHON3 and R
+    whether or not their SLC is installed, so it proves nothing for those;
+    a CUSTOM alias (RUST=...) appears only once that SLC is active."""
+    try:
+        return ctx.db.value("SELECT SYSTEM_VALUE FROM EXA_PARAMETERS WHERE PARAMETER_NAME = 'SCRIPT_LANGUAGES'") or ""
+    except sql.SqlError as e:
+        state.log("WARN", "SCRIPT_LANGUAGES: %s" % e)
+        return ""
+
+
+def _custom_runtime_version(row, kind, reg=None):
+    """The version of the custom SLC registered under the kit's alias: what
+    the kit recorded when it installed it, else the version in the source
+    file's name, else None (someone else's, unknown)."""
+    rec = ((reg or artifacts.load_registry()).get("runtimes") or {}).get(kind) or {}
+    src = (row or {}).get("source") or ""
+    if rec.get("version") and (not rec.get("file") or os.path.basename(src) == rec["file"]):
+        return rec["version"]
+    m = re.search(r"lc-%s-(\d+(?:\.\d+)+)" % re.escape(kind), os.path.basename(src))
+    return m.group(1) if m else None
+
+
+def _runtime_facts(ctx, connector, dry_run, foreign_adapter_schema):
+    kind = plan.runtime_kind(connector)
+    if kind == "lua":
+        return {"runtime": kind, "runtime_installed": True, "runtime_active": True,
+                "runtime_conflict": None, "dns": "n/a"}
+    if kind == "java":
+        java = ctx.rt.slc("java")
+        installed = bool(java and java["installed"] and java.get("type", "official") == "official")
+        # Java "installed" (the launcher's record) is not Java ACTIVE: a run
+        # interrupted between the install and the restart has the first without
+        # the second. Only the sandbox can say - and a dry run must not create
+        # the probe, so there an unknown is taken at the launcher's word.
+        dns, active = "unknown", installed
+        if installed and not foreign_adapter_schema:
+            dns = sandbox_net(ctx, "dns", create=not dry_run)
+            active = None if dns == "unknown" else dns != "inactive"
+        return {"runtime": kind, "runtime_installed": installed, "runtime_active": active if installed else False,
+                "runtime_conflict": None, "dns": dns}
+    spec = plan.runtime_spec(kind)
+    row = ctx.rt.slc(spec["alias"])
+    installed = bool(row and row["installed"] and row.get("type") == "custom")
+    conflict = None
+    if installed:
+        version = _custom_runtime_version(row, kind)
+        if version != spec["version"]:
+            conflict = version or "of an unknown version"
+    active = installed and ("%s=" % spec["alias"]) in _script_languages(ctx)
+    return {"runtime": kind, "runtime_installed": installed, "runtime_active": active,
+            "runtime_conflict": conflict, "dns": "n/a"}
+
+
 def gather_facts(ctx, connector, inputs, dry_run=False):
     db, rt = ctx.db, ctx.rt
     names = sql.object_names(inputs["name"])
-    script = sql.adapter_script_name(connector["id"], connector["adapter"]["version"])
-    java = rt.slc("java")
-    installed = bool(java and java["installed"])
+    ad = plan.adapter(connector)
+    script = sql.adapter_script_name(connector["id"], ad["version"])
     exa = rt.exa_root
-    adapter_cache = state.cache_dir() / connector["adapter"]["sha256"] / connector["adapter"]["file"]
-    staged = exa / artifacts.BUCKET_DIR / artifacts.bucket_rel(connector) / connector["adapter"]["file"]
+    adapter_cache = state.cache_dir() / ad["sha256"] / ad["file"]
+    staged = exa / artifacts.BUCKET_DIR / artifacts.bucket_rel(connector) / ad["stage_name"]
     drv = plan.driver(connector)
     driver_cache, registered = False, True
     if drv:
@@ -274,31 +332,23 @@ def gather_facts(ctx, connector, inputs, dry_run=False):
     script_rows = db.run("SELECT 1 FROM SYS.EXA_ALL_SCRIPTS WHERE SCRIPT_SCHEMA = %s AND SCRIPT_NAME = %s"
                          % (sql.literal(sql.ADAPTER_SCHEMA), sql.literal(script)))
     foreign_adapter_schema = bool(adapter_schema) and not _owned(adapter_schema)
-    # Java "installed" (the launcher's record) is not Java ACTIVE: a run
-    # interrupted between the install and the restart has the first without
-    # the second. Only the sandbox can say - and a dry run must not create the
-    # probe, so there an unknown is taken at the launcher's word.
-    dns, active = "unknown", installed
-    if installed and not foreign_adapter_schema:
-        dns = sandbox_net(ctx, "dns", create=not dry_run)
-        active = None if dns == "unknown" else dns != "inactive"
+    facts = _runtime_facts(ctx, connector, dry_run, foreign_adapter_schema)
     schema_owned = bool(schema) and vs_ours and (
         (schema[0][1] or "") == sql.MARKER or state.source_dir(inputs["name"]).is_dir())
-    return {
-        "java_installed": installed,
-        "java_active": active if installed else False,
+    facts.update({
         "adapter_cached": adapter_cache.is_file(),
         "driver_cached": driver_cache,
-        "adapter_staged": staged.is_file(),
+        # A Lua adapter lives in the script text: there is nothing to stage.
+        "adapter_staged": staged.is_file() or facts["runtime"] == "lua",
         "driver_registered": registered,
-        "dns": dns,
         "connection_exists": bool(conn),
         "connection_owned": _owned(conn),
         "schema_exists": bool(schema),
         "schema_owned": schema_owned,
         "adapter_schema_foreign": foreign_adapter_schema,
         "script_exists": bool(script_rows),
-    }
+    })
+    return facts
 
 
 # --- inputs ---------------------------------------------------------------------------------
@@ -405,7 +455,8 @@ def _read_password(ctx, user, required=True, secret_label="Password", can_keep=F
         # Only offered when there IS a stored one to keep: on a first connect
         # the line promised a password that did not exist.
         keep = ", Enter keeps the stored one" if can_keep else ""
-        pw = ctx.ui.ask_secret("%s for %s (hidden%s)" % (secret_label, user, keep))
+        who = " for %s" % user if user else ""
+        pw = ctx.ui.ask_secret("%s%s (hidden%s)" % (secret_label, who, keep))
     if not pw and not required:
         return None
     if not pw:
@@ -428,16 +479,46 @@ def _probe_target(connector, conn_name):
             chk.get("kind", "jdbc"))
 
 
-def _probe(ctx, connector, conn_name):
+def _probe(ctx, connector, conn_name, cfg=None, host=None):
+    if connector["check"].get("kind") == "vs":
+        _probe_vs(ctx, connector, conn_name, cfg, host)
+        return
     target, drv, kind = _probe_target(connector, conn_name)
     ctx.db.run(sql.import_probe(target, drv, connector["check"]["statement"], kind))
+
+
+def _probe_vs(ctx, connector, conn_name, cfg, host):
+    """A source with no JDBC side to read through (native and REST adapters):
+    the adapter itself is the probe. Creating a virtual schema on the
+    candidate connection makes it reach the source, log in and read the
+    catalog; the throwaway schema is dropped again either way."""
+    db = ctx.db
+    names = dict(cfg["objects"], connection=conn_name)
+    probe = cfg["objects"]["schema"] + "_PROBE"
+    script = cfg["objects"]["script"].split(".", 1)[1]
+    rows = db.run("SELECT SCHEMA_IS_VIRTUAL FROM SYS.EXA_SCHEMAS WHERE SCHEMA_NAME = %s" % sql.literal(probe))
+    ours = db.run("SELECT 1 FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE SCHEMA_NAME = %s AND ADAPTER_SCRIPT_SCHEMA = %s"
+                  % (sql.literal(probe), sql.literal(sql.ADAPTER_SCHEMA)))
+    if rows and not ours:
+        raise Fail(2, "A schema named %s exists and was not created by the kit; the kit needs that name "
+                      "for a moment to test the source. Rename or drop it." % probe)
+    props = plan.vs_properties(connector, names, cfg, host or cfg.get("db_host") or cfg.get("host"))
+    try:
+        if ours:
+            db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(probe), fetch=False)
+        db.run(sql.create_virtual_schema(probe, script, props), fetch=False)
+    finally:
+        try:
+            db.run("DROP VIRTUAL SCHEMA IF EXISTS %s CASCADE" % sql.ident(probe), fetch=False)
+        except (sql.SqlError, Fail) as e:
+            state.log("WARN", "probe schema %s: %s" % (probe, e))
 
 
 def _probe_schema(ctx, connector, conn_name, cfg, first_time):
     """Does the source schema exist, and may the user read it? Exasol does
     not ask: a virtual schema over a missing schema is created empty."""
     tmpl = connector["check"].get("schema")
-    if not tmpl:
+    if not tmpl or connector["check"].get("kind") == "vs":
         return
     statement = plan.render(tmpl, {k: sql.literal(cfg.get(k) or "") for k in plan.input_ids(connector)})
     target, drv, kind = _probe_target(connector, conn_name)
@@ -455,8 +536,9 @@ def _db_host(ctx, cfg, candidate, dns_state):
     """The host to write into the CONNECTION. A name is kept when the Java
     sandbox can resolve it (the adapter connects from there on every query);
     otherwise its address - as the sandbox's own hosts file maps it, else as
-    this machine resolves it - and the caller is told."""
-    if net.is_ip(candidate) or dns_state == "ok" or net.classify_host(candidate) == "loopback":
+    this machine resolves it - and the caller is told. dns_state 'n/a': a
+    runtime that resolves names itself (Rust, Lua) - the name is kept."""
+    if net.is_ip(candidate) or dns_state in ("ok", "n/a") or net.classify_host(candidate) == "loopback":
         return candidate, False
     ip = sandbox_net(ctx, "resolve", candidate)
     if not ip or ip in ("unknown", "inactive"):
@@ -484,6 +566,7 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
     else:
         candidates = [cfg["host"]]
     made = [staging]
+    user = plan.connection_user(connector, cfg)
     try:
         while True:
             last = None
@@ -491,14 +574,19 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
                 host, fallback = _db_host(ctx, cfg, cand, dns_state)
                 url = plan.build_url(connector, host, cfg, level)
                 extras = plan.extra_connections(connector, names, host, cfg, level)
-                ctx.db.run(sql.create_connection(staging, url, cfg["user"], password), fetch=False)
+                # The secret may wrap the password (a JSON document of keys);
+                # it is a secret as a whole, so the log never shows it either.
+                secret = plan.connection_secret(connector, dict(cfg, db_host=host), password)
+                if secret != password:
+                    state.register_secret(secret)
+                ctx.db.run(sql.create_connection(staging, url, user, secret), fetch=False)
                 ctx.db.run(sql.comment_connection(staging), fetch=False)
                 for suffix, target in extras:
                     made.append(staging + suffix)
-                    ctx.db.run(sql.create_connection(staging + suffix, target, cfg["user"], password), fetch=False)
+                    ctx.db.run(sql.create_connection(staging + suffix, target, user, secret), fetch=False)
                     ctx.db.run(sql.comment_connection(staging + suffix), fetch=False)
                 try:
-                    _probe(ctx, connector, staging)
+                    _probe(ctx, connector, staging, cfg, host)
                 except sql.SqlError as e:
                     last = e
                     state.log("INFO", "probe %s failed: %s" % (host, e.kind))
@@ -506,11 +594,11 @@ def _establish(ctx, connector, cfg, names, level, host_cls, password, dns_state,
                         continue
                     break
                 _probe_schema(ctx, connector, staging, cfg, first_time)
-                ctx.db.run(sql.create_connection(names["connection"], url, cfg["user"], password), fetch=False)
+                ctx.db.run(sql.create_connection(names["connection"], url, user, secret), fetch=False)
                 ctx.db.run(sql.comment_connection(names["connection"]), fetch=False)
                 for suffix, target in extras:
                     full = names["connection"] + suffix
-                    ctx.db.run(sql.create_connection(full, target, cfg["user"], password), fetch=False)
+                    ctx.db.run(sql.create_connection(full, target, user, secret), fetch=False)
                     ctx.db.run(sql.comment_connection(full), fetch=False)
                 names["extra_connections"] = [names["connection"] + sfx for sfx, _ in extras]
                 u.ok("The database reaches %s:%s (%s)" % (host, cfg["port"], plan.TLS_LABELS[level]))
@@ -558,17 +646,38 @@ def _ensure_adapter_schema(ctx):
 
 
 def _ensure_adapter_script(ctx, connector, cfg):
+    """The adapter script in the kit's schema, in the source's runtime - and
+    the companion scripts the adapter calls by name, which must live in the
+    same schema. Idempotent: CREATE OR REPLACE throughout."""
     script = cfg["objects"]["script"].split(".", 1)[1]
     bucket = cfg["artifacts"]["bucket"]
-    jar = "%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["adapter_file"])
-    jars = [jar]
-    if plan.driver(connector) and not connector["driver"].get("bundled_in_adapter") and \
-            cfg["artifacts"].get("driver_file"):
-        jars.append("%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["driver_file"]))
+    kind = plan.runtime_kind(connector)
+    udf = None
     _ensure_adapter_schema(ctx)
-    ctx.db.run(sql.create_adapter_script(script, connector["script"]["class"],
-                                         connector["script"]["jvm_options"], jars), fetch=False)
+    if kind == "java":
+        jar = "%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["adapter_file"])
+        jars = [jar]
+        if plan.driver(connector) and not connector["driver"].get("bundled_in_adapter") and \
+                cfg["artifacts"].get("driver_file"):
+            jars.append("%s/%s/%s" % (artifacts.BUCKET_PREFIX, bucket, cfg["artifacts"]["driver_file"]))
+        stmt = sql.create_adapter_script(script, connector["script"]["class"],
+                                         connector["script"]["jvm_options"], jars)
+    elif kind == "lua":
+        ad = plan.adapter(connector)
+        source = artifacts.fetch(ad, ctx.ui).read_text(encoding="utf-8")
+        patch = plan.hook(connector, "adapter_source")
+        if patch:
+            source = patch(connector, source, cfg)
+        stmt = sql.create_lua_adapter_script(script, source, (connector.get("script") or {}).get("preamble", ""))
+    else:
+        udf = artifacts.udf_object(bucket, cfg["artifacts"]["adapter_file"])
+        stmt = sql.create_rust_adapter_script(script, udf, plan.runtime_spec(kind)["alias"])
+    ctx.db.run(stmt, fetch=False)
     ctx.db.run(_comment("SCRIPT", "%s.%s" % (sql.ident(sql.ADAPTER_SCHEMA), sql.ident(script))), fetch=False)
+    for comp in connector.get("scripts", []):
+        ctx.db.run(sql.companion_script(comp["sql"], udf or ""), fetch=False)
+        ctx.db.run(_comment("SCRIPT", "%s.%s" % (sql.ident(sql.ADAPTER_SCHEMA), sql.ident(comp["name"]))),
+                   fetch=False)
     return script
 
 
@@ -622,8 +731,9 @@ def _verify(ctx, cfg, first_time=False):
                                    "ORDER BY TABLE_NAME" % sql.literal(names["schema"]))]
     out = {"tables": tables, "rows_read": False, "sample_query": None, "mcp_readable": None}
     if not tables:
-        ctx.ui.warn("Connected, but %r shows no tables to user %s." % (
-            cfg.get("schema") or cfg.get("database"), cfg["user"]))
+        where = cfg.get("schema") or cfg.get("namespace") or cfg.get("database") or cfg.get("collection")
+        ctx.ui.warn("Connected, but %r shows no tables%s." % (
+            where, " to user %s" % cfg["user"] if cfg.get("user") else ""))
         return out
     first_err, readable = None, None
     for t in tables:
@@ -745,12 +855,26 @@ def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requ
     (or the reasons it is needed), then _apply."""
     name_l = inputs["name"].lower()
     if p["restart_needed"]:
-        answer = consent(ctx, "Virtual schemas need the Java runtime inside the database. Activating "
-                              "it restarts the database once (the first time takes a few minutes while "
-                              "it downloads; later restarts about 30 s). Go ahead?")
+        kind = facts.get("runtime", "java")
+        rt = plan.RUNTIME_LABELS.get(kind, kind)
+        if kind == "java":
+            question = ("Virtual schemas need the Java runtime inside the database. Activating it restarts "
+                        "the database once (the first time takes a few minutes while it downloads; later "
+                        "restarts about 30 s). Go ahead?")
+        elif facts.get("runtime_conflict"):
+            spec = plan.runtime_spec(kind)
+            question = ("The database has the %s runtime %s; %s needs %s. Replacing it restarts the "
+                        "database once, and %s scripts built for the other version stop loading until "
+                        "they are rebuilt. Go ahead?" % (rt, facts["runtime_conflict"], connector["label"],
+                                                         spec["version"], rt))
+        else:
+            question = ("%s runs on the %s runtime, which the kit installs into the database (a pinned, "
+                        "verified download). Activating it restarts the database once (about a minute). "
+                        "Go ahead?" % (connector["label"], rt))
+        answer = consent(ctx, question)
         if not answer:
-            raise Fail(5, "Not connected: the Java runtime needs a database restart, and %s." % (
-                "nobody confirmed it" if answer is None else "it was declined"),
+            raise Fail(5, "Not connected: the %s runtime needs a database restart, and %s." % (
+                rt, "nobody confirmed it" if answer is None else "it was declined"),
                 _connect_cmd({"connector": connector["id"], "name": name_l}, "--yes"),
                 "--yes or EXAKIT_CONFIRM_RUNTIME_UPDATE=1 consents to the one restart.", "consent")
 
@@ -760,13 +884,13 @@ def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requ
     changes = plan.changed_fields(connector, saved, inputs, requested_level)
     reuse_ok = facts["connection_owned"] and saved and not changes
     label = connector.get("secret_label", "Password")
-    password = _read_password(ctx, inputs["user"], required=False, secret_label=label, can_keep=reuse_ok)
+    password = _read_password(ctx, inputs.get("user"), required=False, secret_label=label, can_keep=reuse_ok)
     if password is None and not reuse_ok:
         if saved and facts["connection_owned"]:
             raise Fail(2, "The connection details changed (%s); rebuilding the connection needs the "
                           "password." % ", ".join(changes), None,
                        "Pass it with --password-file <path> or --password-stdin.", "password_needed")
-        _read_password(ctx, inputs["user"], required=True, secret_label=label)  # explains what is missing
+        _read_password(ctx, inputs.get("user"), required=True, secret_label=label)  # explains what is missing
 
     if password is None:
         for k in ("db_host", "tls", "ip_fallback", "fingerprint"):
@@ -777,46 +901,94 @@ def _connect_locked(ctx, connector, inputs, saved, facts, p, cfg, host_cls, requ
     return _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
 
 
+def _install_runtime(ctx, facts):
+    """Record the source's runtime for the next start, when it is missing
+    (or, for a custom one, the wrong version). Lua is built in."""
+    kind = facts["runtime"]
+    if kind == "java":
+        if not facts["runtime_installed"]:
+            ctx.rt.install_slc("java")
+            ctx.ui.ok("Java runtime recorded for the next start")
+        return
+    if kind == "lua" or (facts["runtime_installed"] and not facts.get("runtime_conflict")):
+        return
+    spec = plan.runtime_spec(kind)
+    path = artifacts.fetch(spec, ctx.ui)
+    ctx.rt.install_custom_slc(spec["alias"], spec["language"], path, update=facts["runtime_installed"])
+    reg = artifacts.load_registry()
+    reg["runtimes"][kind] = {"alias": spec["alias"], "version": spec["version"], "file": spec["file"],
+                             "sha256": spec["sha256"], "installed": state.now_iso()}
+    state.write_json(state.registry_path(), reg)
+    ctx.ui.ok("%s runtime %s recorded for the next start" % (plan.RUNTIME_LABELS[kind], spec["version"]))
+
+
+def _ensure_runtime_active(ctx, connector, cfg, first_time=False, quiet=False):
+    """After any restart: the source's runtime must be ACTIVE. For Java this
+    is also where the sandbox's name resolution is put back. Returns the dns
+    state the host choice uses ('n/a' for runtimes that resolve names)."""
+    kind = plan.runtime_kind(connector)
+    if kind == "java":
+        st, _ = _ensure_dns(ctx, quiet=quiet)
+        if st == "inactive":
+            raise _source_fail(cfg, "slc_missing", None, first_time)
+        return st
+    if kind != "lua" and ("%s=" % plan.runtime_spec(kind)["alias"]) not in _script_languages(ctx):
+        raise _source_fail(cfg, "slc_missing", None, first_time)
+    return "n/a"
+
+
+def _stage(ctx, connector, quiet=False):
+    """Fetch, verify and stage what the source's adapter needs. Returns the
+    adapter version and driver (or None) for the message."""
+    u, exa = ctx.ui, ctx.rt.exa_root
+    ad = plan.adapter(connector)
+    drv = plan.driver(connector)
+    adapter = artifacts.fetch(ad, u)
+    driver = artifacts.fetch(drv, u) if drv else None
+    if plan.runtime_kind(connector) != "lua":
+        artifacts.stage_adapter(exa, connector, artifacts.payload(ad, adapter), driver)
+    if drv:
+        artifacts.stage_driver(exa, drv, driver)
+    return ad, drv
+
+
 def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved):
     u, name = ctx.ui, cfg["name"]
-    if not facts["java_installed"]:
-        ctx.rt.install_slc("java")
-        u.ok("Java runtime recorded for the next start")
-    drv = plan.driver(connector)
+    _install_runtime(ctx, facts)
     if connector.get("license_notice"):
         u.info(connector["license_notice"])
-    adapter = artifacts.fetch(connector["adapter"], u)
-    driver = artifacts.fetch(drv, u) if drv else None
-    artifacts.stage_adapter(ctx.rt.exa_root, connector, adapter, driver)
+    ad, drv = _stage(ctx, connector)
     if drv:
-        artifacts.stage_driver(ctx.rt.exa_root, drv, driver)
-        u.ok("Adapter %s and driver %s verified and staged" % (connector["adapter"]["version"], drv["version"]))
+        u.ok("Adapter %s and driver %s verified and staged" % (ad["version"], drv["version"]))
         clash = artifacts.foreign_prefix_owners(ctx.rt.exa_root, drv)
         if clash:
             u.warn("Another JDBC driver registration also claims %s (%s). Queries may use that one "
                    "instead of the kit's." % (drv["settings"]["PREFIX"], ", ".join(clash)))
     else:
-        u.ok("Adapter %s verified and staged" % connector["adapter"]["version"])
+        u.ok("Adapter %s verified%s" % (ad["version"], "" if plan.runtime_kind(connector) == "lua" else " and staged"))
     reg = artifacts.load_registry()
     art = cfg["artifacts"]
     artifacts.add_ref(reg, "adapters", art["adapter_key"], name,
-                      {"bucket": art["bucket"], "script": cfg["objects"]["script"]})
+                      {"bucket": art["bucket"], "script": cfg["objects"]["script"], "connector": connector["id"],
+                       "companions": [s["name"] for s in connector.get("scripts", [])]})
     if drv:
         artifacts.add_ref(reg, "drivers", art["driver_name"], name, {"connector": connector["id"],
                                                                      "file": art["driver_file"]})
     state.write_json(state.registry_path(), reg)
 
     if p["restart_needed"]:
-        u.info("Restarting the database to activate the Java runtime")
+        u.info("Restarting the database to activate the %s runtime"
+               % plan.RUNTIME_LABELS.get(facts["runtime"], facts["runtime"]))
         took = ctx.rt.restart(ctx.wait_ready, say=u.info)
         u.ok("Database restarted (%ds)" % took)
-    dns_state, _ = _ensure_dns(ctx)
-    if dns_state == "inactive":
-        raise _source_fail(cfg, "slc_missing", None, first_time)
+    dns_state = _ensure_runtime_active(ctx, connector, cfg, first_time)
+    # Before any probe: a source without a JDBC side is probed THROUGH its
+    # adapter, and every later step needs the script anyway.
+    _ensure_adapter_script(ctx, connector, cfg)
 
     if password is None:
         try:
-            _probe(ctx, connector, cfg["objects"]["connection"])
+            _probe(ctx, connector, cfg["objects"]["connection"], cfg)
         except sql.SqlError as e:
             f = _source_fail(cfg, e.kind, e, first_time)
             f.hint = ("%s The existing connection was kept; pass the password again to rebuild it."
@@ -829,7 +1001,6 @@ def _apply(ctx, connector, cfg, facts, p, password, host_cls, first_time, saved)
                                            password, dns_state, first_time)
         cfg.update(db_host=host, tls=level, ip_fallback=fallback)
 
-    _ensure_adapter_script(ctx, connector, cfg)
     _ensure_virtual_schema(ctx, connector, cfg, refresh=True, first_time=first_time)
     result = _verify(ctx, cfg, first_time)
 
@@ -919,22 +1090,25 @@ def _connection_exists(ctx, cfg):
 def _check_runtime(ctx, connector, cfg):
     """What a restart or an outside change can undo, repaired before judging:
     the staged files of THIS source's adapter version, the driver
-    registration, Java, name resolution."""
+    registration, the runtime (and, for Java, name resolution) - and then the
+    adapter script, which a probe through the adapter needs."""
     art, exa = cfg["artifacts"], ctx.rt.exa_root
     if art.get("adapter_version") == connector["adapter"]["version"]:
-        adapter = artifacts.fetch(connector["adapter"], ctx.ui)
+        ad = plan.adapter(connector)
         drv = plan.driver(connector)
+        adapter = artifacts.fetch(ad, ctx.ui)
         driver = artifacts.fetch(drv, ctx.ui) if drv else None
-        artifacts.stage_adapter(exa, connector, adapter, driver)
+        if plan.runtime_kind(connector) != "lua":
+            artifacts.stage_adapter(exa, connector, artifacts.payload(ad, adapter), driver)
         if drv and art.get("driver_file") == drv["file"]:
             artifacts.stage_driver(exa, drv, driver)
-    elif not (exa / artifacts.BUCKET_DIR / art["bucket"] / art["adapter_file"]).is_file():
+    elif plan.runtime_kind(connector) != "lua" and \
+            not (exa / artifacts.BUCKET_DIR / art["bucket"] / art["adapter_file"]).is_file():
         raise Fail(1, "The adapter files of %s (version %s) are gone, and this kit now ships %s." % (
             cfg["objects"]["schema"], art.get("adapter_version"), connector["adapter"]["version"]),
             _connect_cmd(cfg), "Connecting again moves the source to the current adapter.", "upgrade_needed")
-    st, _ = _ensure_dns(ctx)
-    if st == "inactive":
-        raise _source_fail(cfg, "slc_missing", None)
+    st = _ensure_runtime_active(ctx, connector, cfg)
+    _ensure_adapter_script(ctx, connector, cfg)
     return st
 
 
@@ -951,14 +1125,13 @@ def check(ctx):
                 raise Fail(1, "The connection %s is gone (was the database rebuilt?)." % names["connection"],
                            _connect_cmd(cfg), "Connecting again recreates it; it asks for the password.",
                            "connection_missing")
-            _probe(ctx, connector, names["connection"])
+            _probe(ctx, connector, names["connection"], cfg)
             u.ok("The database reaches the source")
             if cfg.get("ip_fallback") and cfg.get("db_host"):
                 now = net.resolve_here(cfg["host"])
                 if now and cfg["db_host"] not in now:
                     u.warn("%s now resolves to %s, but the connection still uses %s." % (
                         cfg["host"], ", ".join(now), cfg["db_host"]))
-            _ensure_adapter_script(ctx, connector, cfg)
             _ensure_virtual_schema(ctx, connector, cfg, refresh=False)
             result = _verify(ctx, cfg)
         except sql.SqlError as e:
@@ -984,7 +1157,7 @@ def reauth(ctx):
     new = dict(cfg)
     if getattr(ctx.args, "user", None):
         new["user"] = ctx.args.user
-    password = _read_password(ctx, new["user"], secret_label=connector.get("secret_label", "Password"))
+    password = _read_password(ctx, new.get("user"), secret_label=connector.get("secret_label", "Password"))
     ctx.ui.step("Updating the credentials of %s" % names["connection"])
     with ctx.lock():
         try:
@@ -992,7 +1165,6 @@ def reauth(ctx):
             host, level, fallback = _establish(ctx, connector, new, names, new["tls"],
                                                net.classify_host(new["host"]), password, dns_state, False)
             new.update(db_host=host, tls=level, ip_fallback=fallback)
-            _ensure_adapter_script(ctx, connector, new)
             _ensure_virtual_schema(ctx, connector, new, refresh=False)
             result = _verify(ctx, new)
         except sql.SqlError as e:
@@ -1016,7 +1188,6 @@ def refresh(ctx):
     with ctx.lock():
         try:
             _check_runtime(ctx, connector, cfg)
-            _ensure_adapter_script(ctx, connector, cfg)
             _ensure_virtual_schema(ctx, connector, cfg, refresh=True)
             result = _verify(ctx, cfg)
         except sql.SqlError as e:
@@ -1045,6 +1216,8 @@ def removal_plan(cfg, reg, connector=None):
     if akey and not [r for r in a.get("refs", []) if r != name]:
         items.append(("adapter_script", a.get("script", names.get("script"))))
         items.append(("bucket_folder", a.get("bucket", art.get("bucket"))))
+        if not [k for k in reg["adapters"] if k != akey and k.split("/")[0] == akey.split("/")[0]]:
+            items += [("script", "%s.%s" % (sql.ADAPTER_SCHEMA, c)) for c in a.get("companions") or []]
     dkey = art.get("driver_name")
     d = reg["drivers"].get(dkey, {"refs": []}) if dkey else {"refs": [name]}
     if dkey and not [r for r in d.get("refs", []) if r != name]:
@@ -1073,6 +1246,17 @@ def _drop_script_if_unused(ctx, qualified):
     return True, None
 
 
+def _drop_companion(ctx, name):
+    """Drop one of the kit's companion scripts - only if it carries the kit's
+    COMMENT. Returns True when it was dropped."""
+    s = ctx.db.run("SELECT SCRIPT_COMMENT FROM SYS.EXA_ALL_SCRIPTS WHERE SCRIPT_SCHEMA = %s AND SCRIPT_NAME = %s"
+                   % (sql.literal(sql.ADAPTER_SCHEMA), sql.literal(name)))
+    if not _owned(s):
+        return False
+    ctx.db.run("DROP SCRIPT %s.%s" % (sql.ident(sql.ADAPTER_SCHEMA), sql.ident(name)), fetch=False)
+    return True
+
+
 def _release_artifacts(ctx, cfg, keep_driver):
     """Drop this source's references to an adapter version (and driver), and
     delete what nothing references any more - skipping, with a reason, what
@@ -1093,6 +1277,13 @@ def _release_artifacts(ctx, cfg, keep_driver):
             if artifacts.remove_bucket_files(exa, entry.get("bucket") or art["bucket"]):
                 removed.append({"kind": "bucket_folder", "name": entry.get("bucket") or art["bucket"]})
             reg["adapters"].pop(akey, None)
+            # Companion scripts have fixed names, shared by every version of
+            # the connector's adapter: they go with the last one.
+            same = [k for k in reg["adapters"] if k.split("/")[0] == akey.split("/")[0]]
+            if not same:
+                for comp in entry.get("companions") or []:
+                    if _drop_companion(ctx, comp):
+                        removed.append({"kind": "script", "name": "%s.%s" % (sql.ADAPTER_SCHEMA, comp)})
     dkey = art.get("driver_name")
     if dkey and not keep_driver and artifacts.drop_ref(reg, "drivers", dkey, cfg["name"]):
         users = [k for k, v in reg["adapters"].items() if k.split("/")[0] == cfg["connector"] and v.get("refs")]
@@ -1215,14 +1406,17 @@ def show(ctx):
         reached += " (address used because the Java runtime cannot resolve names)"
     # Connectors differ in what they ask (Exasol has no database, Snowflake a
     # warehouse), so the line lists what this source actually has.
-    detail = ", ".join("%s %s" % (k, cfg[k]) for k in ("database", "warehouse", "schema", "role") if cfg.get(k))
+    detail = ", ".join("%s %s" % (k, cfg[k]) for k in ("database", "warehouse", "schema", "role", "namespace",
+                                                        "collection", "catalog") if cfg.get(k))
     ctx.ui.panel("Source %s" % cfg["name"].lower(), [
         ("Source", "%s (%s:%s%s)" % (cfg["connector"], cfg["host"], cfg["port"], ", " + detail if detail else "")),
         ("Reached as", reached),
         ("TLS", plan.TLS_LABELS.get(cfg.get("tls"), cfg.get("tls"))),
-        ("User", cfg["user"]),
+        ("User", cfg.get("user") or "-"),
         ("Objects", "%s, %s, %s" % (o["schema"], o["connection"], o["script"])),
-        ("Adapter", "%s (driver %s)" % (art.get("adapter_version", "?"), art.get("driver_version", "?"))),
+        ("Adapter", "%s (%s runtime, driver %s)" % (
+            art.get("adapter_version", "?"), plan.RUNTIME_LABELS.get(art.get("runtime", "java"), "?"),
+            art.get("driver_version") or "none")),
         ("Status", "%s (checked %s)" % (st.get("status", "unknown"), (st.get("last_check") or "never")[:16])),
         ("Tables", ", ".join(st.get("tables") or []) or "-"),
     ])
@@ -1231,8 +1425,11 @@ def show(ctx):
 
 def runtime_hook(ctx):
     """Run after every database start: put the sandbox's name-resolution links
-    back. Quiet and best-effort - a start must never fail because of this."""
-    if not any(state.sources_dir().glob("*/config.json")):
+    back. Quiet and best-effort - a start must never fail because of this.
+    Only Java sources need it: the Rust SLC links its own, Lua resolves."""
+    java = [f for f in state.sources_dir().glob("*/config.json")
+            if ((state.read_json(f) or {}).get("artifacts") or {}).get("runtime", "java") == "java"]
+    if not java:
         return 0, {"ok": True, "status": "nothing_to_do", "remedy": None, "remedy_hint": None}
     try:
         st, fixed = _ensure_dns(ctx, quiet=True)

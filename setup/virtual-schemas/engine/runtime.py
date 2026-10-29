@@ -8,6 +8,11 @@ Facts this module is built on (verified against launcher 2.3.0, Nano
   - JDBC adapters need the Java script language container (SLC). A fresh
     deployment has none: `exasol slc install java --no-restart` records it and
     it activates on the next start - the only step here that needs a restart.
+  - Native (Rust) adapters need a CUSTOM SLC: there is no official Rust
+    flavor, so `exasol slc custom install --alias RUST --no-restart` records
+    a pinned, verified tarball (runtimes.json), again active after a restart.
+    The launcher keeps no version for it; the kit records the one it put in.
+  - Lua is built into the database: nothing to install.
   - Every `exasol start` creates a NEW database container.
   - The SLC images on Docker Hub ship /etc/resolv.conf and /etc/hosts as
     empty files, while the UDF framework mounts the real ones under /conf.
@@ -21,6 +26,7 @@ Facts this module is built on (verified against launcher 2.3.0, Nano
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -49,6 +55,19 @@ def _run(cmd, timeout=60, check=False, input_bytes=None):
 
 def _text(b):
     return b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
+
+
+def db_arch(environ=None):
+    """The database's CPU architecture, for native (Rust) artifacts: the
+    database runs on this machine's architecture - in Podman on Linux and
+    Windows, in the launcher's VM on macOS. EXAKIT_VS_ARCH overrides."""
+    environ = os.environ if environ is None else environ
+    m = (environ.get("EXAKIT_VS_ARCH") or platform.machine() or "").lower()
+    if m in ("amd64", "x86_64", "x64"):
+        return "x86_64"
+    if m in ("arm64", "aarch64"):
+        return "aarch64"
+    return m
 
 
 class Runtime:
@@ -94,15 +113,35 @@ class Runtime:
     # --- script language containers ----------------------------------------------
 
     def slc_list(self):
-        """[{aliases, flavor, version, installed}] from `exasol slc list`."""
+        """[{type, aliases, flavor, version, installed, source}] from `exasol
+        slc list --json`; the table form is the fallback for a launcher
+        without --json. A custom SLC (type 'custom') carries no version - the
+        launcher does not know it - only the source it was installed from."""
+        p = _run([self.launcher, "slc", "list", "--json"], timeout=30)
+        out = _text(p.stdout)
+        start = out.find("[")
+        if p.returncode == 0 and start >= 0:
+            try:
+                rows = []
+                for r in json.loads(out[start:out.rfind("]") + 1]):
+                    aliases = r.get("aliases") or ([r["alias"]] if r.get("alias") else [])
+                    rows.append({"type": r.get("type", "official"), "language": r.get("language"),
+                                 "aliases": [a.lower() for a in aliases], "flavor": r.get("flavor"),
+                                 "version": r.get("version"), "installed": bool(r.get("installed")),
+                                 "source": r.get("source")})
+                return rows
+            except (ValueError, KeyError, TypeError):
+                pass
         p = _run([self.launcher, "slc", "list"], timeout=30)
         rows = []
         for line in _text(p.stdout).splitlines():
             cols = re.split(r"\s{2,}", line.strip())
-            if len(cols) < 4 or cols[0] == "ALIASES":
+            if len(cols) < 4 or cols[0] in ("ALIASES", "CUSTOM ALIAS"):
                 continue
-            rows.append({"aliases": [a.strip().lower() for a in cols[0].split(",")],
-                         "flavor": cols[1], "version": cols[2], "installed": cols[3].lower() == "yes"})
+            rows.append({"type": "official", "language": None,
+                         "aliases": [a.strip().lower() for a in cols[0].split(",")],
+                         "flavor": cols[1], "version": cols[2], "installed": cols[3].lower() == "yes",
+                         "source": None})
         return rows
 
     def slc(self, alias):
@@ -114,11 +153,18 @@ class Runtime:
     def install_slc(self, alias):
         _run([self.launcher, "slc", "install", alias, "--no-restart"], timeout=120, check=True)
 
+    def install_custom_slc(self, alias, language, source, update=False):
+        """Record a custom SLC (a verified local tarball) for the next start.
+        `update` replaces one already registered under that alias."""
+        _run([self.launcher, "slc", "custom", "update" if update else "install", "--alias", alias,
+              "--language", language, "--source", str(source), "--no-restart"], timeout=600, check=True)
+
     def java_flavor_dirs(self):
-        # Java only: adapters run there, and the kit has no business changing
-        # how the user's own Python or R scripts behave.
+        # Java only: its adapters need the links, the Rust SLC makes its own,
+        # and the kit has no business changing how the user's own Python or R
+        # scripts behave.
         return ["/exa/slc/%s" % r["flavor"] for r in self.slc_list()
-                if r["installed"] and "java" in r["aliases"]]
+                if r["installed"] and r["type"] == "official" and "java" in r["aliases"]]
 
     # --- restart ------------------------------------------------------------------
     # Through exakit when the bridge told us where it is: `exakit stop` and
