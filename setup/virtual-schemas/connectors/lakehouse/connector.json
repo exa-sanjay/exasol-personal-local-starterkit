@@ -4,6 +4,7 @@
   "label": "Lakehouse (Iceberg, Unity Catalog)",
   "aliases": ["iceberg", "lake", "unity", "unity-catalog"],
   "alias_inputs": {"unity": {"catalog": "unity"}, "unity-catalog": {"catalog": "unity"}},
+  "menu_note": "reads the Iceberg files directly",
   "runtime": "rust",
   "adapter": {
     "repo": "exasol-labs/lakehouse-engine-rs",
@@ -63,7 +64,12 @@
     "from_url": {"https": "verify", "http": "none"}
   },
   "check": {"kind": "vs"},
+  "failures": [
+    {"pattern": "EXTERNAL[ _]USE[ _]SCHEMA|external data access|SCHEMA_DB_STORAGE|default storage", "kind": "external_access"}
+  ],
   "messages": {
+    "external_access": {"message": "Unity Catalog does not let engines outside Databricks read the files of {namespace}.",
+                        "hint": "The metastore needs External data access switched on, and the token's user needs EXTERNAL USE SCHEMA on the schema. A schema on Databricks Default Storage (Free Edition, serverless-only workspaces) can never be read from outside: give it a managed location on your own storage, or read it through the SQL warehouse instead: exakit connect databricks"},
     "auth": {"message": "The catalog or the storage refused the credentials.",
              "hint": "Check the S3 access key ({user}) and its secret key, or the catalog token. A 403 from storage can also be a bucket policy that does not let this key read the table's files."},
     "network": {"message": "The database cannot reach the catalog at {host}:{port} or the storage endpoint {endpoint}.",
@@ -77,6 +83,6 @@
     "Table and column names arrive upper-cased (ORDERS, ORDER_ID): query them without quotes.",
     "Iceberg tables with equality deletes, or ORC or Avro data files, are not read; positional deletes and deletion vectors are.",
     "Filters, projections, LIMIT and aggregates run inside the Rust scan; nothing is copied into Exasol.",
-    "Databricks tables are reachable here too: exakit connect unity --url https://<workspace-host> with a personal access token (no --user) and EXAKIT_VS_NAMESPACE=<catalog>.<schema>."
+    "Databricks tables are reachable here too, without a SQL warehouse: exakit connect unity --url https://<workspace-host> with a personal access token (no --user) and EXAKIT_VS_NAMESPACE=<catalog>.<schema>. The schema must live on your own storage with external data access allowed; otherwise use exakit connect databricks."
   ]
 }

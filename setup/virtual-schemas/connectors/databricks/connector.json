@@ -3,9 +3,8 @@
   "id": "databricks",
   "label": "Databricks",
   "aliases": ["dbx"],
+  "menu_note": "through a SQL warehouse",
   "runtime": "lua",
-  "available": false,
-  "unavailable_reason": "no live Databricks workspace has proven it: its rows are read through Exasol Personal's import process, whose Java trust store is empty, and whether the Databricks JDBC driver connects without one (AllowSelfSignedCerts) is unverified.",
   "adapter": {
     "repo": "exasol/databricks-virtual-schema",
     "version": "1.0.2",
@@ -62,6 +61,8 @@
   "check": {"statement": "SELECT 1"},
   "failures": [
     {"pattern": "E-EXAKIT-PIN", "kind": "pin_mismatch"},
+    {"pattern": "Invalid access token|HTTP request failed by code: 40[13]", "kind": "auth"},
+    {"pattern": "for iterator' \\(table expected, got nil\\)", "kind": "no_tables"},
     {"pattern": "Connection failure while using the OSS Databricks JDBC driver", "kind": "network"},
     {"pattern": "Internal communication error", "kind": "import_failed"}
   ],
@@ -70,8 +71,10 @@
              "hint": "Create a new personal access token in the workspace (User settings > Developer), then: exakit source reauth {name|lower}"},
     "pin_mismatch": {"message": "The certificate of {host} no longer matches the one the kit pinned.",
                      "hint": "Databricks renews its certificates now and then. A check reads the new one, verifies it from this PC and pins it: exakit source check {name|lower}"},
+    "no_tables": {"message": "Databricks lists no tables in {catalog}.{schema} for this token.",
+                  "hint": "The adapter reads tables through the Unity Catalog API, which shows nothing for the shared samples catalog or for a schema the token cannot browse. Use a schema of your own (e.g. workspace.default with a table in it): set EXAKIT_VS_CATALOG and EXAKIT_VS_SCHEMA and run exakit connect databricks again."},
     "import_failed": {"message": "Exasol Personal's import process failed while the Databricks driver connected.",
-                      "hint": "This is the row path that keeps the Databricks connector marked unavailable: the import process has no Java trust store. Meanwhile, Databricks tables can be read through the lakehouse connector: exakit connect unity (a personal access token, EXAKIT_VS_NAMESPACE=<catalog>.<schema>)."}
+                      "hint": "The rows travel through the import process and the Databricks JDBC driver (AllowSelfSignedCerts=1, as the import process has no Java trust store). Check that the SQL warehouse is running or can start, then: exakit source check {name|lower}"}
   },
   "notes": [
     "The adapter's metadata calls are checked against the workspace certificate's SHA-256, pinned when you connect (the certificate is verified from this PC first); rows travel encrypted through the JDBC driver.",

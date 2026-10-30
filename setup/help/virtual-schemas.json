@@ -115,18 +115,18 @@
     },
     {
       "name": "EXAKIT_VS_ALLOW_UNAVAILABLE",
-      "effect": "1 lets you try a source marked unavailable (Databricks, Snowflake) - for checking whether it works on your setup or a newer Exasol Personal."
+      "effect": "1 lets you try a source marked unavailable (Snowflake) - for checking whether it works on your setup or a newer Exasol Personal."
     }
   ],
   "notes": [
     "Every virtual schema is readable by the MCP read-only user, so your AI clients can see the source's data the moment it is connected.",
     "The password lives only in the database's CONNECTION object. The kit's admin user can still read it back through a script, as the owner of any Exasol connection can - use a read-only account on the source.",
-    "Sources and TLS: PostgreSQL, MySQL and SQL Server are encrypted without verifying the server's certificate (Exasol Personal's import process has no trust store yet); Oracle uses Native Network Encryption; another Exasol is verified by its certificate fingerprint; MongoDB and the lakehouse (native Rust adapters) verify certificates against public CAs. Databricks is built but unavailable until a live workspace proves its row path; Snowflake is unavailable because its driver must verify certificates. An unencrypted link is offered only for hosts on this machine or a private network.",
+    "Sources and TLS: PostgreSQL, MySQL and SQL Server are encrypted without verifying the server's certificate (Exasol Personal's import process has no trust store yet); Oracle uses Native Network Encryption; another Exasol is verified by its certificate fingerprint; MongoDB and the lakehouse (native Rust adapters) verify certificates against public CAs. Databricks reads through a SQL warehouse, its adapter's calls pinned to the workspace certificate; Snowflake is unavailable because its driver must verify certificates. An unencrypted link is offered only for hosts on this machine or a private network.",
     "Host names: Exasol Personal's Java runtime ships without name resolution. The kit links it in after every database start (the database's boot entry runs exakit start database for that); EXAKIT_VS_DNS_WORKAROUND=0 turns this off and the kit uses IP addresses instead.",
     "localhost inside the database is the database itself. A source on this computer is reached through the container's host address, which exakit connect works out for you.",
     "MySQL's driver (Connector/J) is GPL software the kit downloads onto this machine only.",
     "MongoDB and the lakehouse run on a Rust runtime the kit installs once from a pinned, verified download (one restart). Each Rust adapter release loads only in the runtime version it was built for; the kit keeps the connectors and that pin in step.",
-    "Databricks tables can be read today through the lakehouse connector: exakit connect unity --url https://<workspace-host>, a personal access token as the password (no --user), EXAKIT_VS_NAMESPACE=<catalog>.<schema>."
+    "Databricks tables can also be read without a warehouse through the lakehouse connector: exakit connect unity --url https://<workspace-host>, a personal access token as the password (no --user), EXAKIT_VS_NAMESPACE=<catalog>.<schema>. The schema must live on your own storage with external data access allowed; Databricks Default Storage cannot be read this way."
   ],
   "troubleshooting": [
     {

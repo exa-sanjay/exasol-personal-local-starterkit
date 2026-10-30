@@ -11,8 +11,8 @@ make the tables of an external database appear in the local Exasol as
 Supported: **PostgreSQL, MySQL, SQL Server, Oracle** and **Exasol** (another
 Exasol, or a schema of this one) on the Java runtime; **MongoDB** and the
 **lakehouse** (Iceberg REST catalog, or Unity Catalog incl. Databricks) on a
-pinned Rust runtime. **Databricks** (its own connector) and **Snowflake** are
-not available yet (see below).
+pinned Rust runtime; **Databricks** through a SQL warehouse on the built-in
+Lua runtime. **Snowflake** is not available yet.
 
 | Source | `exakit connect <type>` | TLS on Exasol Personal |
 |---|---|---|
@@ -23,7 +23,7 @@ not available yet (see below).
 | Exasol | `exasol` | **verified** - the certificate is pinned by fingerprint |
 | MongoDB | `mongodb` (`mongo`) | **verified**; off only for local / private-network hosts |
 | Lakehouse | `lakehouse` (`iceberg`, `unity`) | **verified** (https); plain http only for local / private hosts |
-| Databricks | `databricks` | not available: adapter calls pinned to the workspace certificate, row path unproven |
+| Databricks | `databricks` (through a SQL warehouse) | adapter calls pinned to the workspace certificate; rows encrypted, not verified |
 | Snowflake | `snowflake` | not available: its driver must verify certificates, which the import side cannot yet |
 
 `exakit connect` does the whole setup — adapter (and JDBC driver) downloaded and
@@ -81,8 +81,20 @@ EXAKIT_VS_ENDPOINT=http://localhost:9000 exakit connect lakehouse --name lake \
   --url http://localhost:8181 --user AKIA... --password-file ~/s3.pw --json
 ```
 
-Databricks tables, while the `databricks` connector is unavailable: the lakehouse's
-Unity Catalog route (`unity` sets it), a personal access token as the password, no `--user`:
+Databricks through a SQL warehouse: the JDBC URL from the warehouse's Connection
+details, a personal access token, and the catalog and schema to show (the shared
+`samples` catalog lists no tables this way; use a schema of your own):
+
+```bash
+EXAKIT_VS_CATALOG=workspace EXAKIT_VS_SCHEMA=default exakit connect databricks --name dbx \
+  --url 'jdbc:databricks://dbc-a1b2c3d4-e5f6.cloud.databricks.com:443/default;httpPath=/sql/1.0/warehouses/abc123' \
+  --password-file ~/dbx-token --json
+```
+
+Databricks tables without a warehouse: the lakehouse's Unity Catalog route (`unity`
+sets it), a personal access token as the password, no `--user`. It needs the schema on
+your own storage, External data access on the metastore and EXTERNAL USE SCHEMA for
+the token's user; Databricks Default Storage (Free Edition) cannot be read this way:
 
 ```bash
 EXAKIT_VS_NAMESPACE=main.sales exakit connect unity --name sales \

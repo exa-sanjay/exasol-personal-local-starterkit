@@ -92,6 +92,22 @@ def find_connector(connectors, name):
         name, ", ".join(sorted(connectors))))
 
 
+def source_menu(connectors):
+    """The connect menu: (id, label, unavailable) per connector, in the
+    loaded order. A connector's menu_note tells apart two that reach the
+    same place (Databricks through a warehouse, or its files directly)."""
+    out = []
+    for c in connectors.values():
+        label = c["label"]
+        if c.get("menu_note"):
+            label += " - " + c["menu_note"]
+        off = c.get("available", True) is False
+        if off:
+            label += " (not available yet)"
+        out.append((c["id"], label, off))
+    return out
+
+
 def unavailable_reason(connector):
     """Why this connector cannot be used on Exasol Personal yet, or None.
     EXAKIT_VS_ALLOW_UNAVAILABLE=1 lets someone try anyway (against a real

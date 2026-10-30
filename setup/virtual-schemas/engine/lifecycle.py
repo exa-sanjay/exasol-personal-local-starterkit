@@ -449,15 +449,20 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
         if not tty:
             raise Fail(2, "The source type is required: pass it (exakit connect postgresql), or set "
                           "EXAKIT_VS_SOURCE")
+        options = plan.source_menu(connectors)
+        default = next((i for i, o in enumerate(options) if not o[2]), 0)
         inputs["source"] = u.choose("Which source do you want to connect?",
-                                    [(c["id"], c["label"]) for c in connectors.values()])
+                                    [(value, label) for value, label, _ in options], default)
     try:
         connector = plan.find_connector(connectors, inputs["source"])
     except plan.PlanError as e:
         raise Fail(2, str(e))
     why = plan.unavailable_reason(connector)
     if why:
-        raise Fail(2, "%s cannot be connected yet: %s" % (connector["label"], why), None, None, "unavailable")
+        hint = None if "EXAKIT_VS_ALLOW_UNAVAILABLE" in why else (
+            "To try it anyway (on a newer Exasol Personal, say): set EXAKIT_VS_ALLOW_UNAVAILABLE=1 "
+            "and run the connect again.")
+        raise Fail(2, "%s cannot be connected yet: %s" % (connector["label"], why), None, hint, "unavailable")
     # An alias can stand for answers (lakehouse's `unity` is the Unity
     # Catalog route); anything given explicitly still wins.
     for k, v in (connector.get("alias_inputs") or {}).get(inputs["source"].strip().lower(), {}).items():

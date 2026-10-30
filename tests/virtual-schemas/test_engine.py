@@ -952,8 +952,9 @@ class Databricks(unittest.TestCase):
     BASE = {"name": "SALES", "host": "dbc-1.cloud.databricks.com", "port": 443,
             "http_path": "/sql/1.0/warehouses/abc", "catalog": "main", "schema": "sales"}
 
-    def test_unavailable_until_proven(self):
-        self.assertIn("live Databricks workspace", plan.unavailable_reason(self.DB))
+    def test_available_and_no_restart(self):
+        # Proven against a live workspace: metadata through the pin, rows through IMPORT.
+        self.assertIsNone(plan.unavailable_reason(self.DB))
         p = plan.build_plan(self.DB, self.BASE, {"runtime": "lua"})
         self.assertNotIn("restart", [s["step"] for s in p["steps"]])
 
@@ -999,6 +1000,45 @@ class Databricks(unittest.TestCase):
                                    "unknown", Exception("Lua Error E-EXAKIT-PIN: the certificate of x ..."))
         self.assertEqual(f.kind, "pin_mismatch")
         self.assertIn("exakit source check sales", f.hint)
+
+    def test_refused_token_is_auth_not_network(self):
+        # Seen live: the driver wraps a 403 in its generic connection-failure line.
+        err = ("Connection failure while using the OSS Databricks JDBC driver. Failed to connect to server: "
+               "https://x:443 ... HTTP request failed by code: 403, status line: HTTP/1.1 403 Forbidden. "
+               "Error message: Invalid access token.")
+        f = lifecycle._source_fail(dict(self.BASE, connector="databricks", artifacts={"runtime": "lua"}),
+                                   "unknown", Exception(err))
+        self.assertEqual(f.kind, "auth")
+        self.assertIn("reauth sales", f.hint)
+
+    def test_source_menu(self):
+        menu = plan.source_menu(CS)
+        first_ok = next(i for i, o in enumerate(menu) if not o[2])
+        self.assertFalse(menu[first_ok][2])
+        labels = dict((m[0], m[1]) for m in menu)
+        self.assertTrue(labels["snowflake"].endswith("(not available yet)"))
+        self.assertNotIn("not available", labels["databricks"])
+        self.assertIn("SQL warehouse", labels["databricks"])
+        self.assertIn("directly", labels["lakehouse"])
+
+    def test_unity_default_storage_is_named(self):
+        err = ("Privilege EXTERNAL USE SCHEMA is not applicable to this entity "
+               "[workspace.x:SCHEMA/SCHEMA_DB_STORAGE]")
+        f = lifecycle._source_fail({"name": "UC", "connector": "lakehouse", "host": "dbc-1.cloud.databricks.com",
+                                    "port": 443, "namespace": "workspace.x", "artifacts": {"runtime": "rust"}},
+                                   "unknown", Exception(err))
+        self.assertEqual(f.kind, "external_access")
+        self.assertIn("workspace.x", str(f))
+        self.assertIn("exakit connect databricks", f.hint)
+
+    def test_empty_schema_is_named(self):
+        # Seen live: the Unity Catalog API omits 'tables' for an empty schema and the adapter crashes on it.
+        err = ("Lua Error \"1955:\"EXAKIT_VS\".\"DATABRICKS_SALES\"|bad argument #1 for function 'for iterator' "
+               "(table expected, got nil)\" caught in script")
+        f = lifecycle._source_fail(dict(self.BASE, connector="databricks", artifacts={"runtime": "lua"},
+                                        catalog="samples", schema="tpch"), "unknown", Exception(err))
+        self.assertEqual(f.kind, "no_tables")
+        self.assertIn("samples.tpch", str(f))
 
 
 class UiTwin(unittest.TestCase):

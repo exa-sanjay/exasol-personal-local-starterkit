@@ -77,7 +77,7 @@ The kit downloads the adapter (and a JDBC driver where one is needed), checks th
 | Exasol | Verified, the certificate is pinned by its fingerprint |
 | MongoDB | Verified; or off, for MongoDB on this machine or a private network |
 | Lakehouse (Iceberg REST, Unity Catalog) | Verified (https); or plain http for a local or private catalog |
-| Databricks | Not available yet: the adapter's calls are pinned to the workspace certificate, the row path is unproven |
+| Databricks (through a SQL warehouse) | The adapter's calls are pinned to the workspace certificate; rows are encrypted, the certificate is not verified |
 | Snowflake | Not available yet: its driver must verify certificates |
 
 ### Add-ons through `exakit marketplace`

@@ -14,8 +14,8 @@ metadata, the Databricks JDBC driver for the rows.
     source's own (adapter.script_scope "source").
   - The rows travel through the database's import process and the
     Databricks JDBC driver, whose Java trust store is empty on Exasol
-    Personal; AllowSelfSignedCerts=1 is the driver's way past that, which is
-    why the connector is unavailable until a live workspace proves it.
+    Personal; AllowSelfSignedCerts=1 is the driver's way past that (proven
+    against a live workspace).
   - Token authentication: the CONNECTION's USER is the literal 'token', the
     personal access token is its password (AuthMech=3).
 """

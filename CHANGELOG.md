@@ -45,14 +45,21 @@ marketplace add-on.
   MongoDB maps a collection to a root table plus child tables for nested
   objects and arrays. The lakehouse keeps storage keys or a catalog token in
   the CONNECTION as a JSON document the kit builds from the answers.
-- **Databricks** (`exakit connect databricks`) is built but unavailable
-  until a live workspace proves its row path. Its Lua adapter's HTTPS calls
+- **Databricks** (`exakit connect databricks`) reads through a SQL
+  warehouse, proven against a live workspace. Its Lua adapter's HTTPS calls
   are pinned: the kit reads the workspace certificate from this machine with
   full verification and patches the adapter to accept exactly that
   certificate, closing the upstream gap where certificate checks are off;
   `exakit source check` re-reads, verifies and re-pins a renewed certificate.
-  Meanwhile Databricks tables are reachable through `exakit connect unity`
-  (the lakehouse connector's Unity Catalog route).
+  Rows travel through the import process and the Databricks JDBC driver,
+  encrypted without verifying the certificate. A refused token and a schema
+  the token cannot list are each named as such. `exakit connect unity` (the
+  lakehouse connector's Unity Catalog route) reads Databricks tables without
+  a warehouse, when they live on your own storage with external data access
+  allowed; a schema on Databricks Default Storage is refused with that reason.
+- The `exakit connect` menu marks a source that is not available yet and
+  never offers one as the default; the refusal names
+  `EXAKIT_VS_ALLOW_UNAVAILABLE=1`.
 - Adapter upgrades: a shared native adapter moves all of its sources to a
   new version together and refreshes their virtual schemas; a stale record is
   moved forward rather than pointing the shared script back at an old
