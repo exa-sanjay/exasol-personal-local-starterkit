@@ -903,6 +903,8 @@ def _say_ready(ctx, connector, cfg, result):
         if os.name == "nt":
             u.info("From PowerShell, escape the inner quotes: exakit sql '%s'"
                    % result["sample_query"].replace('"', '\\"'))
+        u.info("%d table(s); their columns and DDL: exakit source describe %s [--ddl]"
+               % (len(result["tables"]), cfg["name"].lower()))
     else:
         u.done("Connected: %s (no tables visible yet)" % names["schema"])
 
@@ -1825,8 +1827,55 @@ def show(ctx):
             art.get("driver_version") or "none")),
         ("Status", "%s (checked %s)" % (st.get("status", "unknown"), (st.get("last_check") or "never")[:16])),
         ("Tables", ", ".join(st.get("tables") or []) or "-"),
+        ("Columns", "exakit source describe %s [<table>] [--ddl]" % cfg["name"].lower()),
     ])
     return 0, {"ok": True, "source": cfg, "state": st, "remedy": None, "remedy_hint": None}
+
+
+def describe(ctx):
+    """Tables and columns of a source as Exasol sees them, read from the
+    database's own catalog: no call reaches the source, so it costs nothing
+    there (a Databricks warehouse is not woken). --ddl prints CREATE TABLE
+    statements, alone on stdout so they can be redirected into a file."""
+    cfg, _ = _load(ctx.args.name)
+    schema = cfg["objects"]["schema"]
+    rows = ctx.db.run("SELECT COLUMN_TABLE, COLUMN_NAME, COLUMN_TYPE, COLUMN_IS_NULLABLE FROM SYS.EXA_ALL_COLUMNS "
+                      "WHERE COLUMN_SCHEMA = %s ORDER BY COLUMN_TABLE, COLUMN_ORDINAL_POSITION" % sql.literal(schema))
+    tables = {}
+    for t, c, typ, nullable in rows:
+        tables.setdefault(t, []).append((c, typ, nullable in (True, "TRUE", "true", 1)))
+    want = ctx.args.table
+    if want:
+        # As typed, else the upper-cased name most sources arrive as.
+        hit = want if want in tables else next((t for t in tables if t.upper() == want.upper()), None)
+        if hit is None:
+            raise Fail(2, "%s has no table %r" % (schema, want), None,
+                       "Its tables: %s. A table added at the source appears after: exakit source refresh %s"
+                       % (", ".join(sorted(tables)) or "none", cfg["name"].lower()), "table_missing")
+        tables = {hit: tables[hit]}
+    out = [{"name": t, "columns": [{"name": c, "type": typ, "nullable": n} for c, typ, n in cols]}
+           for t, cols in sorted(tables.items())]
+    if ctx.args.ddl:
+        for o, (t, cols) in zip(out, sorted(tables.items())):
+            o["ddl"] = sql.table_ddl(schema, t, cols)
+    result = {"ok": True, "source": cfg["name"], "schema": schema, "tables": out,
+              "remedy": None, "remedy_hint": None}
+    if ctx.json:
+        return 0, result
+    if not out:
+        ctx.ui.warn("%s shows no tables. If the source has some now: exakit source refresh %s"
+                    % (schema, cfg["name"].lower()))
+    elif ctx.args.ddl:
+        sys.stdout.write("\n".join(o["ddl"] for o in out))
+        sys.stdout.flush()
+    else:
+        for o in out:
+            ctx.ui.step("%s.%s (%d column%s)" % (schema, sql.ident(o["name"]), len(o["columns"]),
+                                                "" if len(o["columns"]) == 1 else "s"))
+            ctx.ui.table(["Column", "Type", "Nullable"],
+                         [(c["name"], c["type"], "yes" if c["nullable"] else "no") for c in o["columns"]])
+            ctx.ui.blank()
+    return 0, result
 
 
 def runtime_hook(ctx):

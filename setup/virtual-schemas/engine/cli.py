@@ -4,6 +4,7 @@
             [--user U] [--schema S] [--tls verify|encrypt|none]
             [--password-file PATH | --password-stdin] [--yes] [--dry-run] [--json]
     source list|show|check|reauth|refresh|remove NAME [--dry-run] [--yes] [--json]
+    source describe NAME [TABLE] [--ddl] [--json]
     hook post-start
 
 There is deliberately no --password option: a command line is readable by
@@ -64,6 +65,12 @@ def _parser():
             a.add_argument("--dry-run", action="store_true")
             a.add_argument("--yes", "-y", action="store_true")
 
+    d = ss.add_parser("describe", allow_abbrev=False)
+    d.add_argument("name")
+    d.add_argument("table", nargs="?")
+    d.add_argument("--ddl", action="store_true")
+    d.add_argument("--json", "-j", action="store_true")
+
     h = sub.add_parser("hook", allow_abbrev=False)
     h.add_argument("event", choices=["post-start"])
     h.add_argument("--json", "-j", action="store_true")
@@ -91,7 +98,7 @@ def main(argv=None):
     except _BadInput as e:
         return _refuse(as_json, str(e))
     if not args.command or (args.command == "source" and not args.action):
-        return _refuse(as_json, "say what to do: connect, or source list|show|check|reauth|refresh|remove")
+        return _refuse(as_json, "say what to do: connect, or source list|show|describe|check|reauth|refresh|remove")
 
     code, result, ctx = 1, None, None
     try:
@@ -101,7 +108,8 @@ def main(argv=None):
         elif args.command == "hook":
             code, result = lifecycle.runtime_hook(ctx)
         else:
-            fn = {"list": lifecycle.list_sources, "show": lifecycle.show, "check": lifecycle.check,
+            fn = {"list": lifecycle.list_sources, "show": lifecycle.show, "describe": lifecycle.describe,
+                  "check": lifecycle.check,
                   "reauth": lifecycle.reauth, "refresh": lifecycle.refresh,
                   "remove": lifecycle.remove}[args.action]
             code, result = fn(ctx)
@@ -167,7 +175,7 @@ def _refuse(as_json, message):
         _emit(dict(_failure(2, message), rejected=True))
     else:
         sys.stderr.write("\n  [x] %s\n" % message)
-        sys.stderr.write("      Usage: exakit connect [source] | exakit source list|show|check|"
+        sys.stderr.write("      Usage: exakit connect [source] | exakit source list|show|describe|check|"
                          "reauth|refresh|remove <name>\n")
     return 2
 

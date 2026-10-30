@@ -18,6 +18,11 @@ marketplace add-on.
   CONNECTION, the adapter script and the virtual schema, and proves the link
   by reading rows. New details go into a staging connection and replace the
   old ones only after they work; a failed first connect leaves nothing behind.
+- `exakit source describe <name> [<table>] [--ddl]` lists a source's
+  tables and columns with their Exasol types, read from the database's own
+  catalog (nothing reaches the source, so a Databricks warehouse stays
+  asleep). `--ddl` prints runnable CREATE TABLE statements plus a commented
+  line that copies the table locally; `--json` carries both.
 - `exakit source list | show | check | reauth | refresh | remove`. `remove`
   drops only objects the kit tagged as its own. A shared adapter or driver
   goes with the last source that uses it, and anything another object still

@@ -68,7 +68,7 @@ exakit source list                     # every source, its TLS level and last ch
 exakit sql 'SELECT * FROM "VS_SALES"."orders" LIMIT 10'
 ```
 
-The kit downloads the adapter (and a JDBC driver where one is needed), checks them against pinned checksums, and installs the runtime the adapter needs: Java for the JDBC sources, a pinned Rust runtime for MongoDB and the lakehouse. That is the one step that restarts the database, and the kit asks first. It then proves the link by reading real rows. The password is stored only inside the database's CONNECTION object. Your AI clients can query the new schema through MCP straight away. `exakit source check | reauth | refresh | remove` manage a source afterwards.
+The kit downloads the adapter (and a JDBC driver where one is needed), checks them against pinned checksums, and installs the runtime the adapter needs: Java for the JDBC sources, a pinned Rust runtime for MongoDB and the lakehouse. That is the one step that restarts the database, and the kit asks first. It then proves the link by reading real rows. The password is stored only inside the database's CONNECTION object. Your AI clients can query the new schema through MCP straight away. `exakit source describe <name> [--ddl]` shows its tables, columns and their Exasol DDL; `exakit source check | reauth | refresh | remove` manage a source afterwards.
 
 | Source | TLS on Exasol Personal |
 |---|---|

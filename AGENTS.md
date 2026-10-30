@@ -178,6 +178,7 @@ What an agent needs to know:
 exakit connect postgresql --name sales --url jdbc:postgresql://db.example.com:5432/shop \
     --user reader --schema public --password-file ~/pg.pw --yes --json
 exakit source list --json                    # every source, TLS level, last check
+exakit source describe sales --ddl --json    # tables, columns, Exasol types, CREATE TABLE (no call to the source)
 exakit source check sales --json             # repair what a restart undid, then prove rows come back
 exakit source reauth sales --password-file ~/pg.pw
 exakit source remove sales --dry-run         # then --yes; only objects the kit tagged as its own go

@@ -46,7 +46,7 @@
 #   connect [source]    connect an external database (PostgreSQL, ...) as a
 #                       virtual schema: artifacts, driver, Java runtime and
 #                       objects are set up for you; asks before the one restart
-#   source list|show|check|reauth|refresh|remove <name> [--dry-run]
+#   source list|show|describe|check|reauth|refresh|remove <name> [--dry-run]
 #                       manage connected sources (remove asks first)
 #   sql '<statement>' [--write]
 #                       run one SQL statement and translate the error into a

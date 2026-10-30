@@ -1078,6 +1078,26 @@ class Cli(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertFalse(obj["ok"])
 
+    def test_describe_parses(self):
+        a = cli._parser().parse_args(["source", "describe", "sales", "orders", "--ddl", "--json"])
+        self.assertEqual((a.action, a.name, a.table, a.ddl, a.json), ("describe", "sales", "orders", True, True))
+        a = cli._parser().parse_args(["source", "describe", "sales"])
+        self.assertEqual((a.table, a.ddl), (None, False))
+
+
+class Describe(unittest.TestCase):
+    def test_ddl_quotes_every_name(self):
+        ddl = sql.table_ddl("VS_MFLIX", "THEATERS", [("_id", "VARCHAR(64) UTF8", True),
+                                                     ("location|object", "VARCHAR(64) UTF8", True),
+                                                     ('odd"name', "DECIMAL(10,0)", False)])
+        self.assertIn('CREATE TABLE "THEATERS" (\n    "_id" VARCHAR(64) UTF8,\n', ddl)
+        self.assertIn('    "location|object" VARCHAR(64) UTF8,\n', ddl)
+        self.assertIn('    "odd""name" DECIMAL(10,0) NOT NULL\n);', ddl)
+        self.assertIn('AS SELECT * FROM "VS_MFLIX"."THEATERS";', ddl)
+        # Everything but the CREATE TABLE is a comment, so the output runs as is.
+        code = [l for l in ddl.splitlines() if not l.startswith("--")]
+        self.assertTrue(code[0].startswith("CREATE TABLE") and code[-1] == ");")
+
 
 if __name__ == "__main__":
     unittest.main()

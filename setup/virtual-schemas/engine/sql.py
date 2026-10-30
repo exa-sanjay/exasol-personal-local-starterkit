@@ -76,6 +76,16 @@ def comment_connection(conn):
     return "COMMENT ON CONNECTION %s IS %s" % (ident(conn), literal(MARKER))
 
 
+def table_ddl(schema, table, columns):
+    """The Exasol-side DDL of one virtual table, plus a commented line that
+    copies it into a local table. columns: (name, type, nullable) in order.
+    Every name is quoted: MongoDB's are mixed case and carry '|'."""
+    cols = ",\n".join("    %s %s%s" % (ident(n), t, "" if nullable else " NOT NULL") for n, t, nullable in columns)
+    return ("-- %s.%s as Exasol sees it\nCREATE TABLE %s (\n%s\n);\n"
+            "-- a local copy: CREATE TABLE <schema>.%s AS SELECT * FROM %s.%s;\n"
+            % (ident(schema), ident(table), ident(table), cols, ident(table), ident(schema), ident(table)))
+
+
 def import_probe(conn, driver_name, statement="SELECT 1", kind="jdbc"):
     """A bounded read through the database's import side. kind 'exa' reads
     through an EXA connection (Exasol to Exasol, no JDBC driver involved)."""

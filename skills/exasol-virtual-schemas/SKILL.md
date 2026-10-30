@@ -132,6 +132,7 @@ array columns are left out, `BYTEA` reads as the text `bytea NOT SUPPORTED`.
 ```bash
 exakit source list                 # every source, TLS level, last check
 exakit source show sales
+exakit source describe sales      # tables, columns, Exasol types; [<table>] [--ddl] for CREATE TABLE
 exakit source check sales          # repair what a restart can undo, then prove it reads
 exakit source refresh sales        # re-read the source's tables and columns
 exakit source reauth sales --password-file ~/pg.pw   # old credentials stay until new ones work
