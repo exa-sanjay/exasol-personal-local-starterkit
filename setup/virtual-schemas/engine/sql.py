@@ -76,14 +76,22 @@ def comment_connection(conn):
     return "COMMENT ON CONNECTION %s IS %s" % (ident(conn), literal(MARKER))
 
 
-def table_ddl(schema, table, columns):
+def _comment_safe(text):
+    # A name from a remote source must not end a comment line early.
+    return re.sub(r"[\x00-\x1f\x7f]", "?", text)
+
+
+def table_ddl(schema, table, columns, into=None):
     """The Exasol-side DDL of one virtual table, plus a commented line that
     copies it into a local table. columns: (name, type, nullable) in order.
-    Every name is quoted: MongoDB's are mixed case and carry '|'."""
+    Every name is quoted: MongoDB's are mixed case and carry '|'. into: the
+    target schema; without it the statement runs in the session's open one."""
+    target = "%s.%s" % (ident(into), ident(table)) if into else ident(table)
+    copy_to = "%s.%s" % (ident(into), ident(table)) if into else "<schema>.%s" % ident(table)
     cols = ",\n".join("    %s %s%s" % (ident(n), t, "" if nullable else " NOT NULL") for n, t, nullable in columns)
-    return ("-- %s.%s as Exasol sees it\nCREATE TABLE %s (\n%s\n);\n"
-            "-- a local copy: CREATE TABLE <schema>.%s AS SELECT * FROM %s.%s;\n"
-            % (ident(schema), ident(table), ident(table), cols, ident(table), ident(schema), ident(table)))
+    return _comment_safe("-- %s.%s as Exasol sees it" % (ident(schema), ident(table))) + (
+        "\nCREATE TABLE %s (\n%s\n);\n" % (target, cols)) + _comment_safe(
+        "-- a local copy: CREATE TABLE %s AS SELECT * FROM %s.%s;" % (copy_to, ident(schema), ident(table))) + "\n"
 
 
 def import_probe(conn, driver_name, statement="SELECT 1", kind="jdbc"):

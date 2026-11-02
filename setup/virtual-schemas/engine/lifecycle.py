@@ -450,7 +450,8 @@ def _ask_inputs(ctx, connectors, inputs, url_from):
             raise Fail(2, "The source type is required: pass it (exakit connect postgresql), or set "
                           "EXAKIT_VS_SOURCE")
         options = plan.source_menu(connectors)
-        default = next((i for i, o in enumerate(options) if not o[2]), 0)
+        usable = [i for i, o in enumerate(options) if not o[2]]
+        default = next((i for i in usable if options[i][0] == plan.MENU_DEFAULT), usable[0] if usable else 0)
         inputs["source"] = u.choose("Which source do you want to connect?",
                                     [(value, label) for value, label, _ in options], default)
     try:
@@ -1755,6 +1756,8 @@ def remove(ctx):
         uses_kit = db.run("SELECT 1 FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE SCHEMA_NAME = %s AND "
                           "ADAPTER_SCRIPT_SCHEMA = %s" % (sql.literal(names["schema"]),
                                                           sql.literal(sql.ADAPTER_SCHEMA)))
+        # A virtual schema made by an older kit may lack the COMMENT tag; one
+        # named VS_<NAME> on the kit's own adapter is the kit's all the same.
         if vs and (_owned(vs) or uses_kit):
             db.run("DROP VIRTUAL SCHEMA %s CASCADE" % sql.ident(names["schema"]), fetch=False)
             removed.append({"kind": "virtual_schema", "name": names["schema"]})
@@ -1826,10 +1829,17 @@ def show(ctx):
             art.get("adapter_version", "?"), plan.RUNTIME_LABELS.get(art.get("runtime", "java"), "?"),
             art.get("driver_version") or "none")),
         ("Status", "%s (checked %s)" % (st.get("status", "unknown"), (st.get("last_check") or "never")[:16])),
-        ("Tables", ", ".join(st.get("tables") or []) or "-"),
+        ("Tables", _table_summary(st.get("tables") or [])),
         ("Columns", "exakit source describe %s [<table>] [--ddl]" % cfg["name"].lower()),
     ])
     return 0, {"ok": True, "source": cfg, "state": st, "remedy": None, "remedy_hint": None}
+
+
+def _table_summary(tables, keep=8):
+    if not tables:
+        return "-"
+    shown = ", ".join(tables[:keep])
+    return "%d: %s%s" % (len(tables), shown, ", ... (+%d more)" % (len(tables) - keep) if len(tables) > keep else "")
 
 
 def describe(ctx):
@@ -1838,34 +1848,47 @@ def describe(ctx):
     there (a Databricks warehouse is not woken). --ddl prints CREATE TABLE
     statements, alone on stdout so they can be redirected into a file."""
     cfg, _ = _load(ctx.args.name)
-    schema = cfg["objects"]["schema"]
+    schema, name = cfg["objects"]["schema"], cfg["name"].lower()
+    if not ctx.db.run("SELECT 1 FROM SYS.EXA_ALL_VIRTUAL_SCHEMAS WHERE SCHEMA_NAME = %s" % sql.literal(schema)):
+        raise Fail(1, "The virtual schema %s is gone." % schema, "exakit source check %s" % name,
+                   "A check creates it again from the source's stored connection.", "vs_missing")
     rows = ctx.db.run("SELECT COLUMN_TABLE, COLUMN_NAME, COLUMN_TYPE, COLUMN_IS_NULLABLE FROM SYS.EXA_ALL_COLUMNS "
                       "WHERE COLUMN_SCHEMA = %s ORDER BY COLUMN_TABLE, COLUMN_ORDINAL_POSITION" % sql.literal(schema))
     tables = {}
     for t, c, typ, nullable in rows:
-        tables.setdefault(t, []).append((c, typ, nullable in (True, "TRUE", "true", 1)))
+        # Nullable unless the catalog says otherwise: a wrong NOT NULL breaks loading.
+        tables.setdefault(t, []).append((c, typ, nullable not in (False, "FALSE", "false", 0)))
     want = ctx.args.table
     if want:
-        # As typed, else the upper-cased name most sources arrive as.
-        hit = want if want in tables else next((t for t in tables if t.upper() == want.upper()), None)
-        if hit is None:
+        # As typed, else case-insensitively - but never a guess between two.
+        hits = [want] if want in tables else [t for t in tables if t.upper() == want.upper()]
+        if not hits:
             raise Fail(2, "%s has no table %r" % (schema, want), None,
                        "Its tables: %s. A table added at the source appears after: exakit source refresh %s"
-                       % (", ".join(sorted(tables)) or "none", cfg["name"].lower()), "table_missing")
-        tables = {hit: tables[hit]}
+                       % (", ".join(sorted(tables)) or "none", name), "table_missing")
+        if len(hits) > 1:
+            raise Fail(2, "%r matches %d tables in %s: %s" % (want, len(hits), schema, ", ".join(sorted(hits))),
+                       None, "Give the name with its exact case.", "table_ambiguous")
+        tables = {hits[0]: tables[hits[0]]}
     out = [{"name": t, "columns": [{"name": c, "type": typ, "nullable": n} for c, typ, n in cols]}
            for t, cols in sorted(tables.items())]
     if ctx.args.ddl:
         for o, (t, cols) in zip(out, sorted(tables.items())):
-            o["ddl"] = sql.table_ddl(schema, t, cols)
-    result = {"ok": True, "source": cfg["name"], "schema": schema, "tables": out,
+            o["ddl"] = sql.table_ddl(schema, t, cols, ctx.args.into)
+    result = {"ok": True, "source": name, "schema": schema, "tables": out,
               "remedy": None, "remedy_hint": None}
     if ctx.json:
         return 0, result
     if not out:
         ctx.ui.warn("%s shows no tables. If the source has some now: exakit source refresh %s"
-                    % (schema, cfg["name"].lower()))
+                    % (schema, name))
     elif ctx.args.ddl:
+        try:
+            # Names a source sends need not fit the console's code page; a
+            # redirected file must get them exactly.
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
         sys.stdout.write("\n".join(o["ddl"] for o in out))
         sys.stdout.flush()
     else:

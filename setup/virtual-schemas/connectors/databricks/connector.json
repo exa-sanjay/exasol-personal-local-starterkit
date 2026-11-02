@@ -61,8 +61,10 @@
   "check": {"statement": "SELECT 1"},
   "failures": [
     {"pattern": "E-EXAKIT-PIN", "kind": "pin_mismatch"},
-    {"pattern": "Invalid access token|HTTP request failed by code: 40[13]", "kind": "auth"},
-    {"pattern": "for iterator' \\(table expected, got nil\\)", "kind": "no_tables"},
+    {"pattern": "Invalid access token|HTTP request failed by code: 401\\b", "kind": "auth"},
+    {"pattern": "HTTP request failed by code: 403\\b", "kind": "permission"},
+    {"pattern": "for iterator' \\(table expected, got nil\\)", "kind": "no_tables",
+     "note": "adapter 1.0.2 crashes on the API's missing 'tables' list; re-check this pattern on every adapter bump"},
     {"pattern": "Connection failure while using the OSS Databricks JDBC driver", "kind": "network"},
     {"pattern": "Internal communication error", "kind": "import_failed"}
   ],
@@ -71,13 +73,15 @@
              "hint": "Create a new personal access token in the workspace (User settings > Developer), then: exakit source reauth {name|lower}"},
     "pin_mismatch": {"message": "The certificate of {host} no longer matches the one the kit pinned.",
                      "hint": "Databricks renews its certificates now and then. A check reads the new one, verifies it from this PC and pins it: exakit source check {name|lower}"},
+    "permission": {"message": "Databricks accepted the token but refused the request.",
+                   "hint": "The token's user needs CAN USE on the SQL warehouse, and USE CATALOG, USE SCHEMA and SELECT on {catalog}.{schema}. A new token does not help."},
     "no_tables": {"message": "Databricks lists no tables in {catalog}.{schema} for this token.",
                   "hint": "The adapter reads tables through the Unity Catalog API, which shows nothing for the shared samples catalog or for a schema the token cannot browse. Use a schema of your own (e.g. workspace.default with a table in it): set EXAKIT_VS_CATALOG and EXAKIT_VS_SCHEMA and run exakit connect databricks again."},
     "import_failed": {"message": "Exasol Personal's import process failed while the Databricks driver connected.",
                       "hint": "The rows travel through the import process and the Databricks JDBC driver (AllowSelfSignedCerts=1, as the import process has no Java trust store). Check that the SQL warehouse is running or can start, then: exakit source check {name|lower}"}
   },
   "notes": [
-    "The adapter's metadata calls are checked against the workspace certificate's SHA-256, pinned when you connect (the certificate is verified from this PC first); rows travel encrypted through the JDBC driver.",
+    "The adapter's metadata calls are checked against the workspace certificate's SHA-256, pinned when you connect (the certificate is verified from this PC first); rows travel encrypted through the JDBC driver, whose certificate is not verified - and the token goes along that path too, so give the source a token of its own, scoped as narrowly as the workspace allows.",
     "Upstream limits: at most 50 tables per virtual schema, BINARY columns are not supported, and TABLE_FILTER is not available."
   ]
 }

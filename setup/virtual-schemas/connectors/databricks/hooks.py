@@ -52,6 +52,14 @@ def parse_url(connector, text):
     return fields, notes
 
 
+def validate(connector, v):
+    hp = v.get("http_path") or ""
+    if not re.match(r"^/[A-Za-z0-9/_.-]+$", hp):
+        # It goes into the JDBC URL: a ';' would add driver properties.
+        raise plan.PlanError("The SQL warehouse HTTP path looks like /sql/1.0/warehouses/abc123 (got %r)" % hp)
+    return v
+
+
 def connection_user(connector, inputs):
     return "token"
 
@@ -85,8 +93,12 @@ def prepare(connector, inputs):
         # Any other TLS failure: never leave an empty pin behind it.
         raise plan.PlanError("The TLS handshake with %s failed from this PC (%s); the kit pins only a "
                              "certificate it could read and verify." % (host, e.reason or e))
-    except OSError:
-        return {}  # the probe that follows explains the network failure
+    except OSError as e:
+        # Never an empty pin: the database may reach the workspace when this
+        # PC does not (a proxy, a split VPN), and every call would then fail
+        # as a pin mismatch.
+        raise plan.PlanError("This PC cannot reach %s:%s (%s); the kit reads and verifies the workspace "
+                             "certificate here before it pins it." % (host, port, e.strerror or e))
     return {"fingerprint": hashlib.sha256(der).hexdigest()}
 
 

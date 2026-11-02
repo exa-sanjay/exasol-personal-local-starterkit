@@ -69,6 +69,11 @@ def validate(connector, v):
     if v["catalog"] == "unity" and v.get("namespace") and \
             not re.match(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$", v["namespace"]):
         raise plan.PlanError("A Unity Catalog namespace is catalog.schema (e.g. main.sales)")
+    if v["catalog"] == "unity" and not v.get("user") and not v.get("region"):
+        # Unity's temporary credentials carry no region; a guessed one only
+        # moves the failure to an S3 redirect.
+        raise plan.PlanError("The storage region is required for Unity Catalog: the AWS region of the bucket "
+                             "that holds the tables (EXAKIT_VS_REGION, e.g. us-east-2)")
     ep = v.get("endpoint")
     if ep:
         m = re.match(r"^(https?)://([^/\s:@]+)(?::\d{1,5})?/?$", ep, re.I)

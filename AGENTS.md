@@ -178,7 +178,7 @@ What an agent needs to know:
 exakit connect postgresql --name sales --url jdbc:postgresql://db.example.com:5432/shop \
     --user reader --schema public --password-file ~/pg.pw --yes --json
 exakit source list --json                    # every source, TLS level, last check
-exakit source describe sales --ddl --json    # tables, columns, Exasol types, CREATE TABLE (no call to the source)
+exakit source describe sales --ddl --schema MY --json   # tables, columns, Exasol types, CREATE TABLE into MY (no call to the source)
 exakit source check sales --json             # repair what a restart undid, then prove rows come back
 exakit source reauth sales --password-file ~/pg.pw
 exakit source remove sales --dry-run         # then --yes; only objects the kit tagged as its own go
@@ -196,7 +196,7 @@ exakit source remove sales --dry-run         # then --yes; only objects the kit 
 | `EXAKIT_CONFIRM_RUNTIME_UPDATE=1` | Consent (like `--yes`) to the one database restart the first connect needs when its runtime is missing (Java, or the Rust runtime for MongoDB and the lakehouse) or a Rust runtime of another version has to be replaced. Without it and without a terminal, connect exits `5` and changes nothing |
 | `EXAKIT_VS_DNS_WORKAROUND=0` | Do not link name resolution into the Java sandbox after each start; sources given by host name then fail, give an IP |
 
-- Exit codes: `0` ready · `1` the source could not be reached or read (`--json` carries `kind`, e.g. `network`, `auth`, `tls`, `schema_missing`, `login_or_connection` (MongoDB does not say which), `pin_mismatch` (Databricks renewed its certificate: `exakit source check <name>` verifies and re-pins it), `collection_missing`, `runtime_mismatch`, and a `remedy`) · `2` bad input · `3` database not running · `4` not installed · `5` restart not confirmed.
+- Exit codes: `0` ready · `1` the source could not be reached or read (`--json` carries `kind`, e.g. `network`, `auth`, `tls`, `schema_missing`, `login_or_connection` (MongoDB does not say which), `pin_mismatch` (Databricks renewed its certificate: `exakit source check <name>` verifies and re-pins it), `collection_missing`, `runtime_mismatch`, `no_tables` (Databricks lists no tables in that catalog.schema), `external_access` / `catalog_managed` / `region` (Unity Catalog route), and a `remedy`; `exakit source describe` adds `table_missing`, `table_ambiguous` and `vs_missing`; an unavailable source type is `unavailable`, exit 2) · `2` bad input · `3` database not running · `4` not installed · `5` restart not confirmed.
 - A host of `localhost` means **this machine**: the kit connects through the database container's host alias. For an `exasol` source it means this database itself. Any other host must be reachable from the database container, not only from your shell.
 - The new schema is readable by the MCP read-only user at once. Quote mixed-case source names as they are: `SELECT * FROM "VS_SALES"."orders"`. Lakehouse tables and columns arrive upper-cased; MongoDB child tables keep their spelling (`VS_X."PEOPLE_profile"`) and the connect output's notes say how they join.
 - Never drop `VS_*` schemas, `EXAKIT_SRC_*` connections or the `EXAKIT_VS` schema by hand; use `exakit source remove`.

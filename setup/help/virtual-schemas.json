@@ -56,11 +56,11 @@
     },
     {
       "command": "exakit source describe <name> [<table>]",
-      "options": "[--ddl] [--json]",
+      "options": "[--ddl [--schema <s>]] [--json]",
       "summary": "Tables and columns with their Exasol types, from the database's own catalog (no call to the source). --ddl: CREATE TABLE statements and a local-copy line.",
       "examples": [
         "exakit source describe sales",
-        "exakit source describe sales orders --ddl"
+        "exakit source describe sales orders --ddl --schema MY"
       ]
     },
     {

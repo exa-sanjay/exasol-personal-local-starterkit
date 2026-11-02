@@ -4,7 +4,7 @@
             [--user U] [--schema S] [--tls verify|encrypt|none]
             [--password-file PATH | --password-stdin] [--yes] [--dry-run] [--json]
     source list|show|check|reauth|refresh|remove NAME [--dry-run] [--yes] [--json]
-    source describe NAME [TABLE] [--ddl] [--json]
+    source describe NAME [TABLE] [--ddl [--schema S]] [--json]
     hook post-start
 
 There is deliberately no --password option: a command line is readable by
@@ -69,6 +69,7 @@ def _parser():
     d.add_argument("name")
     d.add_argument("table", nargs="?")
     d.add_argument("--ddl", action="store_true")
+    d.add_argument("--schema", dest="into", help="with --ddl: the schema the CREATE TABLE statements target")
     d.add_argument("--json", "-j", action="store_true")
 
     h = sub.add_parser("hook", allow_abbrev=False)

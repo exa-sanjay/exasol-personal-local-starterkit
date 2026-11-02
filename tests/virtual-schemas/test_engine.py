@@ -1088,7 +1088,89 @@ class Cli(unittest.TestCase):
         self.assertEqual((a.table, a.ddl), (None, False))
 
 
+class ReviewRound4(unittest.TestCase):
+    """Findings of the fourth review and QA round."""
+    LH, DB = CS["lakehouse"], CS["databricks"]
+
+    def _kind(self, connector, text, **cfg):
+        base = {"name": "X", "connector": connector, "host": "h.example.com", "port": 443,
+                "artifacts": {"runtime": "rust" if connector == "lakehouse" else "lua"}}
+        base.update(cfg)
+        return lifecycle._source_fail(base, "unknown", Exception(text)).kind
+
+    def test_unity_needs_a_region_iceberg_does_not(self):
+        unity = {"name": "UC", "host": "dbc-1.cloud.databricks.com", "port": 443, "catalog": "unity",
+                 "namespace": "main.sales"}
+        with self.assertRaises(plan.PlanError):
+            plan.validate(self.LH, unity)
+        self.assertEqual(plan.validate(self.LH, dict(unity, region="us-east-2"))["region"], "us-east-2")
+        # No forced default: an Iceberg REST catalog that vends its own region keeps it.
+        v = plan.validate(self.LH, {"name": "L", "host": "cat.example.com", "port": 443, "catalog": "iceberg",
+                                    "namespace": "shop", "warehouse": "w"})
+        self.assertNotIn("region", json.loads(plan.connection_secret(self.LH, v, "tok")))
+
+    def test_lakehouse_patterns_are_tight(self):
+        for text in ("s3 error: could not write to default storage bucket: Connection refused",
+                     "Default storage class STANDARD_IA unsupported"):
+            self.assertNotEqual(self._kind("lakehouse", text), "external_access", text)
+        self.assertEqual(self._kind("lakehouse", "External Data Access from non Databricks Compute environment "
+                                                 "is disabled for metastore m"), "external_access")
+        self.assertEqual(self._kind("lakehouse", "Max catalog version error: Max catalog version is required "
+                                                 "when loading a catalog-managed table."), "catalog_managed")
+        self.assertEqual(self._kind("lakehouse", "<Code>PermanentRedirect</Code>", region="us-east-1"), "region")
+
+    def test_databricks_401_is_auth_403_is_permission(self):
+        self.assertEqual(self._kind("databricks", "HTTP request failed by code: 401, Unauthorized"), "auth")
+        self.assertEqual(self._kind("databricks", "HTTP request failed by code: 403, Forbidden. Error message: "
+                                                  "Invalid access token."), "auth")
+        self.assertEqual(self._kind("databricks", "HTTP request failed by code: 403, Forbidden. User lacks CAN USE",
+                                    catalog="main", schema="s"), "permission")
+        self.assertNotEqual(self._kind("databricks", "HTTP request failed by code: 4013"), "auth")
+
+    def test_http_path_cannot_add_driver_properties(self):
+        base = {"name": "D", "host": "dbc-1.cloud.databricks.com", "port": 443, "catalog": "main", "schema": "s"}
+        with self.assertRaises(plan.PlanError):
+            plan.validate(self.DB, dict(base, http_path="/sql/1.0/warehouses/abc;ssl=0"))
+        plan.validate(self.DB, dict(base, http_path="/sql/1.0/warehouses/abc123"))
+
+    def test_unreachable_workspace_leaves_no_empty_pin(self):
+        import socket
+        h = plan.hook(self.DB, "prepare")
+        orig = socket.create_connection
+        socket.create_connection = lambda *a, **k: (_ for _ in ()).throw(OSError(113, "No route to host"))
+        try:
+            with self.assertRaises(plan.PlanError):
+                h(self.DB, {"host": "dbc-1.cloud.databricks.com", "port": 443})
+        finally:
+            socket.create_connection = orig
+
+    def test_menu_default_and_override(self):
+        menu = plan.source_menu(CS)
+        self.assertEqual(plan.MENU_DEFAULT, "postgresql")
+        self.assertIn("postgresql", [m[0] for m in menu if not m[2]])
+        os.environ["EXAKIT_VS_ALLOW_UNAVAILABLE"] = "1"
+        try:
+            self.assertFalse(any(m[2] or "not available" in m[1] for m in plan.source_menu(CS)))
+        finally:
+            os.environ.pop("EXAKIT_VS_ALLOW_UNAVAILABLE")
+
+    def test_table_summary(self):
+        self.assertEqual(lifecycle._table_summary([]), "-")
+        self.assertEqual(lifecycle._table_summary(["A", "B"]), "2: A, B")
+        s = lifecycle._table_summary(["T%d" % i for i in range(77)])
+        self.assertTrue(s.startswith("77: T0, T1") and s.endswith("(+69 more)"))
+
+
 class Describe(unittest.TestCase):
+    def test_ddl_comment_lines_survive_hostile_names(self):
+        # Inside the quoted identifier a newline stays part of the name; in a
+        # '--' comment it would end the comment and leave live SQL behind.
+        ddl = sql.table_ddl("VS_M", "a\nDROP SCHEMA X CASCADE;--", [("c", "INT", True)])
+        first, last = ddl.splitlines()[0], ddl.rstrip("\n").rsplit("\n", 1)[1]
+        for line in (first, last):
+            self.assertTrue(line.startswith("-- ") and "a?DROP" in line, line)
+        self.assertIn('CREATE TABLE "MY"."T" (', sql.table_ddl("VS_M", "T", [("c", "INT", True)], "MY"))
+
     def test_ddl_quotes_every_name(self):
         ddl = sql.table_ddl("VS_MFLIX", "THEATERS", [("_id", "VARCHAR(64) UTF8", True),
                                                      ("location|object", "VARCHAR(64) UTF8", True),

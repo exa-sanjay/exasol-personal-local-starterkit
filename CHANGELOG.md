@@ -18,11 +18,13 @@ marketplace add-on.
   CONNECTION, the adapter script and the virtual schema, and proves the link
   by reading rows. New details go into a staging connection and replace the
   old ones only after they work; a failed first connect leaves nothing behind.
-- `exakit source describe <name> [<table>] [--ddl]` lists a source's
-  tables and columns with their Exasol types, read from the database's own
-  catalog (nothing reaches the source, so a Databricks warehouse stays
-  asleep). `--ddl` prints runnable CREATE TABLE statements plus a commented
-  line that copies the table locally; `--json` carries both.
+- `exakit source describe <name> [<table>] [--ddl [--schema S]]` lists a
+  source's tables and columns with their Exasol types, read from the
+  database's own catalog (nothing reaches the source, so a Databricks
+  warehouse stays asleep). `--ddl` prints CREATE TABLE statements (into `S`
+  with `--schema`) plus a commented line that copies the table locally,
+  UTF-8 when redirected; `--json` carries both. A name that matches two
+  tables by case is refused, and a missing virtual schema is named.
 - `exakit source list | show | check | reauth | refresh | remove`. `remove`
   drops only objects the kit tagged as its own. A shared adapter or driver
   goes with the last source that uses it, and anything another object still
@@ -62,8 +64,11 @@ marketplace add-on.
   lakehouse connector's Unity Catalog route) reads Databricks tables without
   a warehouse, when they live on your own storage with external data access
   allowed (proven live against a workspace with its tables on S3; the region
-  given is passed on, as Unity Catalog's temporary credentials carry none); a
-  schema on Databricks Default Storage is refused with that reason.
+  given is passed on, as Unity Catalog's temporary credentials carry none, so
+  the Unity route now requires it); a schema on Databricks Default Storage,
+  a catalog-managed Delta table (which the adapter cannot read yet) and a
+  bucket in another region are each refused with their reason. A Databricks
+  403 for a valid token is a permission problem, not a token one.
 - The `exakit connect` menu marks a source that is not available yet and
   never offers one as the default; the refusal names
   `EXAKIT_VS_ALLOW_UNAVAILABLE=1`.

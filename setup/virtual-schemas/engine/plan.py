@@ -92,6 +92,9 @@ def find_connector(connectors, name):
         name, ", ".join(sorted(connectors))))
 
 
+MENU_DEFAULT = "postgresql"  # the simplest first source, when nothing is typed
+
+
 def source_menu(connectors):
     """The connect menu: (id, label, unavailable) per connector, in the
     loaded order. A connector's menu_note tells apart two that reach the
@@ -101,7 +104,7 @@ def source_menu(connectors):
         label = c["label"]
         if c.get("menu_note"):
             label += " - " + c["menu_note"]
-        off = c.get("available", True) is False
+        off = unavailable_reason(c) is not None
         if off:
             label += " (not available yet)"
         out.append((c["id"], label, off))

@@ -49,7 +49,7 @@
     {"id": "namespace", "label": "Namespace (Unity Catalog: catalog.schema)", "required": true, "connection": false},
     {"id": "warehouse", "label": "Warehouse (Iceberg REST; e.g. s3://warehouse/)"},
     {"id": "endpoint", "label": "S3-compatible storage endpoint (optional, e.g. http://minio:9000)"},
-    {"id": "region", "label": "Storage region (the bucket's AWS region, e.g. us-east-2)", "default": "us-east-1"},
+    {"id": "region", "label": "Storage region (the bucket's AWS region, e.g. us-east-2; Unity Catalog needs it)"},
     {"id": "user", "label": "S3 access key ID (empty: a catalog token with vended credentials)"},
     {"id": "password", "label": "S3 secret key, or catalog token", "secret": true, "required": true}
   ],
@@ -65,9 +65,15 @@
   },
   "check": {"kind": "vs"},
   "failures": [
-    {"pattern": "EXTERNAL[ _]USE[ _]SCHEMA|external data access|SCHEMA_DB_STORAGE|default storage", "kind": "external_access"}
+    {"pattern": "EXTERNAL[ _]USE[ _]SCHEMA|External Data Access from non Databricks Compute|SCHEMA_DB_STORAGE", "kind": "external_access"},
+    {"pattern": "Max catalog version is required|catalog-managed table", "kind": "catalog_managed"},
+    {"pattern": "PermanentRedirect|AuthorizationHeaderMalformed|the region '[a-z0-9-]+' is wrong|expecting '[a-z0-9-]+'", "kind": "region"}
   ],
   "messages": {
+    "catalog_managed": {"message": "A table in {namespace} is catalog-managed: Databricks keeps its newest commits in Unity Catalog, and this adapter version cannot read such a table yet.",
+                        "hint": "Read it through the SQL warehouse instead: exakit connect databricks. The lakehouse route reads a Delta table only while all its commits are in its own files."},
+    "region": {"message": "The storage answered from another AWS region than {region}.",
+               "hint": "Give the bucket's own region (S3 console, bucket properties): set EXAKIT_VS_REGION and run exakit connect lakehouse --name {name|lower} again."},
     "external_access": {"message": "Unity Catalog does not let engines outside Databricks read the files of {namespace}.",
                         "hint": "The metastore needs External data access switched on, and the token's user needs EXTERNAL USE SCHEMA on the schema. A schema on Databricks Default Storage (Free Edition, serverless-only workspaces) can never be read from outside: give it a managed location on your own storage, or read it through the SQL warehouse instead: exakit connect databricks"},
     "auth": {"message": "The catalog or the storage refused the credentials.",
