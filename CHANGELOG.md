@@ -61,7 +61,9 @@ marketplace add-on.
   the token cannot list are each named as such. `exakit connect unity` (the
   lakehouse connector's Unity Catalog route) reads Databricks tables without
   a warehouse, when they live on your own storage with external data access
-  allowed; a schema on Databricks Default Storage is refused with that reason.
+  allowed (proven live against a workspace with its tables on S3; the region
+  given is passed on, as Unity Catalog's temporary credentials carry none); a
+  schema on Databricks Default Storage is refused with that reason.
 - The `exakit connect` menu marks a source that is not available yet and
   never offers one as the default; the refusal names
   `EXAKIT_VS_ALLOW_UNAVAILABLE=1`.

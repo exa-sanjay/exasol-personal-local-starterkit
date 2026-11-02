@@ -135,7 +135,7 @@
     "localhost inside the database is the database itself. A source on this computer is reached through the container's host address, which exakit connect works out for you.",
     "MySQL's driver (Connector/J) is GPL software the kit downloads onto this machine only.",
     "MongoDB and the lakehouse run on a Rust runtime the kit installs once from a pinned, verified download (one restart). Each Rust adapter release loads only in the runtime version it was built for; the kit keeps the connectors and that pin in step.",
-    "Databricks tables can also be read without a warehouse through the lakehouse connector: exakit connect unity --url https://<workspace-host>, a personal access token as the password (no --user), EXAKIT_VS_NAMESPACE=<catalog>.<schema>. The schema must live on your own storage with external data access allowed; Databricks Default Storage cannot be read this way."
+    "Databricks tables can also be read without a warehouse through the lakehouse connector: exakit connect unity --url https://<workspace-host>, a personal access token as the password (no --user), EXAKIT_VS_NAMESPACE=<catalog>.<schema>, EXAKIT_VS_REGION=<the bucket's AWS region>. The schema must live on your own storage with external data access allowed; Databricks Default Storage cannot be read this way."
   ],
   "troubleshooting": [
     {

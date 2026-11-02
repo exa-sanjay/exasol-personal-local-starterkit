@@ -724,7 +724,7 @@ class Runtimes(unittest.TestCase):
         lake_cfg = {"name": "LAKE", "connector": "lakehouse", "host": "10.0.0.9", "port": 8181, "user": "AKIA1",
                     "endpoint": "http://s3:9000", "namespace": "shop", "artifacts": {"runtime": "rust"}}
         f = lifecycle._source_fail(lake_cfg, "network", None)
-        self.assertIn("storage endpoint http://s3:9000", str(f))
+        self.assertIn("the storage that holds the table's files (http://s3:9000)", str(f))
         f = lifecycle._source_fail(lake_cfg, "auth", None)
         self.assertIn("S3 access key (AKIA1)", f.hint)
         # A Rust runtime that cannot resolve a name: not the Java-sandbox story.
@@ -781,9 +781,12 @@ class Lakehouse(unittest.TestCase):
                                "region": "us-east-1", "endpoint": "http://host.containers.internal:19000",
                                "path_style": True})
         self.assertEqual(plan.connection_user(self.LH, self.BASE), "")
-        unity = dict(self.BASE, catalog="unity", namespace="main.sales", user=None, endpoint=None)
+        unity = dict(self.BASE, catalog="unity", namespace="main.sales", user=None, endpoint=None, region=None)
         self.assertEqual(json.loads(plan.connection_secret(self.LH, unity, "dapiTOKEN")),
                          {"token": "dapiTOKEN", "use_vended_credentials": True})
+        # Unity's temporary credentials carry no region: the one given must reach the adapter (seen live).
+        self.assertEqual(json.loads(plan.connection_secret(self.LH, dict(unity, region="us-east-2"), "dapiTOKEN")),
+                         {"token": "dapiTOKEN", "use_vended_credentials": True, "region": "us-east-2"})
 
     def test_properties(self):
         props = plan.vs_properties(self.LH, {"connection": "C"}, dict(self.BASE, tls="none"))

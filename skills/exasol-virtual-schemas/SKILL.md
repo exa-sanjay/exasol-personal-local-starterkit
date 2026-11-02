@@ -97,7 +97,7 @@ your own storage, External data access on the metastore and EXTERNAL USE SCHEMA 
 the token's user; Databricks Default Storage (Free Edition) cannot be read this way:
 
 ```bash
-EXAKIT_VS_NAMESPACE=main.sales exakit connect unity --name sales \
+EXAKIT_VS_NAMESPACE=main.sales EXAKIT_VS_REGION=us-east-2 exakit connect unity --name sales \
   --url https://dbc-a1b2c3d4-e5f6.cloud.databricks.com --password-file ~/dbx-token --json
 ```
 

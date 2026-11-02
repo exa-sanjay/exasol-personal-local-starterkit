@@ -108,8 +108,12 @@ def connection_secret(connector, inputs, password):
         if inputs.get("endpoint"):
             doc.update(endpoint=_endpoint_for_db(inputs["endpoint"]), path_style=True)
     else:
-        # A catalog token; storage credentials come from the catalog.
+        # A catalog token; storage credentials come from the catalog. Unity
+        # Catalog's temporary credentials carry no region, and without one the
+        # adapter addresses 's3..amazonaws.com' (seen live): state it.
         doc.update(token=password, use_vended_credentials=True)
+        if inputs.get("region"):
+            doc["region"] = inputs["region"]
     return json.dumps(doc, separators=(",", ":"))
 
 
