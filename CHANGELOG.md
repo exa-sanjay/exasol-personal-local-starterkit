@@ -66,8 +66,10 @@ marketplace add-on.
   allowed (proven live against a workspace with its tables on S3; the region
   given is passed on, as Unity Catalog's temporary credentials carry none, so
   the Unity route now requires it); a schema on Databricks Default Storage,
-  a catalog-managed Delta table (which the adapter cannot read yet) and a
-  bucket in another region are each refused with their reason. A Databricks
+  a catalog-managed Delta table (which the adapter cannot read yet; its
+  hint names Databricks' Iceberg REST endpoint, which reads such a table
+  through its Iceberg metadata, proven live) and a bucket in another region
+  are each refused with their reason. A Databricks
   403 for a valid token is a permission problem, not a token one.
 - The `exakit connect` menu marks a source that is not available yet and
   never offers one as the default; the refusal names

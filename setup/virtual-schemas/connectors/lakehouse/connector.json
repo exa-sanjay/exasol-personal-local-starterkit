@@ -71,7 +71,7 @@
   ],
   "messages": {
     "catalog_managed": {"message": "A table in {namespace} is catalog-managed: Databricks keeps its newest commits in Unity Catalog, and this adapter version cannot read such a table yet.",
-                        "hint": "Read it through the SQL warehouse instead: exakit connect databricks. The lakehouse route reads a Delta table only while all its commits are in its own files."},
+                        "hint": "An Iceberg table (or a Delta table with Iceberg reads on) reads fine through Databricks' Iceberg REST endpoint, which follows the Iceberg metadata instead: exakit connect lakehouse --url https://{host}/api/2.1/unity-catalog/iceberg-rest with EXAKIT_VS_WAREHOUSE=<catalog> and EXAKIT_VS_NAMESPACE=<schema>. Any table reads through the SQL warehouse: exakit connect databricks."},
     "region": {"message": "The storage answered from another AWS region than {region}.",
                "hint": "Give the bucket's own region (S3 console, bucket properties): set EXAKIT_VS_REGION and run exakit connect lakehouse --name {name|lower} again."},
     "external_access": {"message": "Unity Catalog does not let engines outside Databricks read the files of {namespace}.",
@@ -89,6 +89,6 @@
     "Table and column names arrive upper-cased (ORDERS, ORDER_ID): query them without quotes.",
     "Iceberg tables with equality deletes, or ORC or Avro data files, are not read; positional deletes and deletion vectors are.",
     "Filters, projections, LIMIT and aggregates run inside the Rust scan; nothing is copied into Exasol.",
-    "Databricks tables are reachable here too, without a SQL warehouse: exakit connect unity --url https://<workspace-host> with a personal access token (no --user), EXAKIT_VS_NAMESPACE=<catalog>.<schema> and EXAKIT_VS_REGION=<the bucket's AWS region>. The schema must live on your own storage with external data access allowed; otherwise use exakit connect databricks."
+    "Databricks tables are reachable here too, without a SQL warehouse. Iceberg tables (or Delta tables with Iceberg reads on) through Databricks' Iceberg REST endpoint: --url https://<workspace-host>/api/2.1/unity-catalog/iceberg-rest, EXAKIT_VS_WAREHOUSE=<catalog>, EXAKIT_VS_NAMESPACE=<schema>, a personal access token (no --user) and EXAKIT_VS_REGION; Delta tables through exakit connect unity --url https://<workspace-host> with a personal access token (no --user), EXAKIT_VS_NAMESPACE=<catalog>.<schema> and EXAKIT_VS_REGION=<the bucket's AWS region>. The schema must live on your own storage with external data access allowed; otherwise use exakit connect databricks."
   ]
 }

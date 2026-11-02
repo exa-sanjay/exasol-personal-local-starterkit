@@ -157,7 +157,7 @@ runnable `remedy` (or `null`) plus `remedy_hint`. Branch on `kind`:
 | `pin_mismatch` | Databricks renewed its certificate | `exakit source check <name>`: the new one is verified from this machine and pinned (no token needed) |
 | `no_tables` | Databricks lists no tables in that catalog.schema for this token (the shared `samples` catalog never does) | point the source at a schema of its own: `EXAKIT_VS_CATALOG` / `EXAKIT_VS_SCHEMA`, connect again |
 | `external_access` | Unity Catalog does not let outside engines read the schema's files | metastore External data access on, `EXTERNAL USE SCHEMA` for the token's user; Default Storage never works: use `connect databricks` |
-| `catalog_managed` | a Databricks table keeps its newest commits in Unity Catalog; the lakehouse adapter cannot read it yet | read it through the warehouse: `exakit connect databricks` |
+| `catalog_managed` | a Databricks table keeps its newest commits in Unity Catalog; the `unity` route (Delta) cannot read it yet | an Iceberg table: Databricks' Iceberg REST endpoint (`--url https://<host>/api/2.1/unity-catalog/iceberg-rest`, `EXAKIT_VS_WAREHOUSE=<catalog>`, `EXAKIT_VS_NAMESPACE=<schema>`); any table: `exakit connect databricks` |
 | `region` | the bucket is in another AWS region than the one given | `EXAKIT_VS_REGION=<bucket region>`, connect again |
 | `unavailable` | the source type is not available on Exasol Personal yet (exit 2) | tell the user; `EXAKIT_VS_ALLOW_UNAVAILABLE=1` only to try it |
 | `table_missing` / `table_ambiguous` / `vs_missing` | `describe`: no such table / the name matches two tables by case / the virtual schema is gone | list the tables / give the exact case / `remedy` (`exakit source check`) |
