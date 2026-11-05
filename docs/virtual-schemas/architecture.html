@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Schemas Architecture</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #5b6475; --line: #dde2ea; --panel: #f5f7fa;
+    --accent: #0b6bcb; --code-bg: #eef1f5; --warn: #9a5b00; --ok: #1e7a3c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2b313c; --panel: #1a1f27;
+      --accent: #5aa9ff; --code-bg: #20262f; --warn: #e0a85a; --ok: #6cc98a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151b; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2b313c; --panel: #1a1f27;
+    --accent: #5aa9ff; --code-bg: #20262f; --warn: #e0a85a; --ok: #6cc98a;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
+  nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+        padding: 24px 16px; border-right: 1px solid var(--line); font-size: 14px; }
+  nav .brand { font-weight: 700; margin-bottom: 12px; }
+  nav ol { list-style: none; padding: 0; margin: 0; }
+  nav li { margin: 2px 0; }
+  nav a { color: var(--muted); text-decoration: none; display: block; padding: 3px 8px; border-radius: 6px; }
+  nav a:hover { color: var(--fg); background: var(--panel); }
+  nav .sub { padding-left: 14px; font-size: 13px; }
+  main { padding: 32px 40px 80px; min-width: 0; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 21px; margin: 48px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 28px 0 6px; }
+  p, li { max-width: 78ch; }
+  .lede { color: var(--muted); margin-top: 0; }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.9em;
+         background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted);
+          background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+             padding: 16px; margin: 12px 0 8px; overflow-x: auto; }
+  .diagram pre.mermaid { margin: 0; background: none; text-align: center; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  .table-wrap { overflow-x: auto; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel); font-weight: 600; }
+  .note { border-left: 3px solid var(--accent); background: var(--panel); padding: 8px 14px; margin: 12px 0;
+          border-radius: 0 6px 6px 0; }
+  .note.warn { border-left-color: var(--warn); }
+  .theme-toggle { margin-top: 18px; font: inherit; font-size: 13px; color: var(--muted); background: none;
+                  border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; }
+    main { padding: 20px 16px 60px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav aria-label="Contents">
+  <div class="brand">Virtual schemas</div>
+  <ol>
+    <li><a href="#overview">1. Overview</a></li>
+    <li><a href="#context">2. System context (C4 L1)</a></li>
+    <li><a href="#containers">3. Containers (C4 L2)</a></li>
+    <li><a href="#components">4. Components (C4 L3)</a></li>
+    <li><a href="#decomposition">5. Functional decomposition</a></li>
+    <li><a href="#dataflow">6. Data flows</a>
+      <ol class="sub">
+        <li><a href="#df-secrets">6.1 Secrets</a></li>
+        <li><a href="#df-rows">6.2 Rows</a></li>
+        <li><a href="#df-state">6.3 State and artifacts</a></li>
+      </ol></li>
+    <li><a href="#sequences">7. Sequences</a>
+      <ol class="sub">
+        <li><a href="#seq-connect">7.1 First connect</a></li>
+        <li><a href="#seq-query">7.2 A query</a></li>
+        <li><a href="#seq-reauth">7.3 reauth</a></li>
+        <li><a href="#seq-lake">7.4 Vended credentials</a></li>
+        <li><a href="#seq-start">7.5 After a start</a></li>
+      </ol></li>
+    <li><a href="#deployment">8. Deployment</a></li>
+    <li><a href="#connectors">9. Connector reference</a></li>
+    <li><a href="#reference">10. Names and files</a></li>
+    <li><a href="#maintaining">11. Keeping this page true</a></li>
+  </ol>
+  <button class="theme-toggle" type="button" id="themeToggle">Switch theme</button>
+</nav>
+
+<main>
+<h1>Virtual schemas: architecture</h1>
+<p class="lede">How <code>exakit connect</code> and <code>exakit source</code> make an external source readable from the local Exasol, for kit maintainers and developers. How to use it, source by source: <a href="user-guide.html">Connecting external sources</a>.</p>
+<div class="meta">
+  <span>Code: <code>setup/virtual-schemas/</code></span>
+  <span>Verified against commit <code>4ac1b91</code></span>
+  <span>Platform facts: Exasol Personal 2.3.0, Nano 2026.2.0-nano.3</span>
+</div>
+
+<!-- ======================================================================= -->
+<h2 id="overview">1. Overview</h2>
+<p>A <strong>virtual schema</strong> <code>VS_NAME</code> is a schema in the local Exasol whose tables live somewhere else. Every query is translated by an <strong>adapter</strong> (a script inside the database) and sent to the source; nothing is copied. The kit's job is everything around that:</p>
+<ul>
+  <li><strong>Download and verify</strong> the adapter, plus a JDBC driver where one is needed.</li>
+  <li><strong>Install the runtime</strong> the adapter runs on (Java, a pinned Rust runtime, or the built-in Lua), asking before the one database restart.</li>
+  <li><strong>Create the database objects</strong>: the CONNECTION holding the credentials, the adapter script, the virtual schema.</li>
+  <li><strong>Prove the link</strong> by reading real rows, as the admin and as the read-only MCP user.</li>
+  <li>Keep it working afterwards: <code>check</code>, <code>reauth</code>, <code>refresh</code>, <code>describe</code>, <code>remove</code>.</li>
+</ul>
+<p>It is a <strong>core kit feature</strong>, not a marketplace add-on. The engine is Python (stdlib plus pyexasol) and runs on the kit's pyexasol venv with <code>python -I</code>. Thin bash and PowerShell bridges call it. Each source type is a <strong>data folder</strong> (<code>connector.json</code> plus an optional <code>hooks.py</code>), so a new connector rarely needs engine code.</p>
+<div class="note">Three rules shape most of the design:
+  <ol style="margin:6px 0 0">
+    <li>A secret lives only in the database's CONNECTION object. It is never in the kit's files, logs or output.</li>
+    <li>The kit drops only objects it tagged as its own (COMMENT <code>managed by exakit virtual-schemas</code>).</li>
+    <li>New details replace working ones only after they are proven, through a staging connection.</li>
+  </ol></div>
+
+<!-- ======================================================================= -->
+<h2 id="context">2. System context (C4 level 1)</h2>
+<p>Who uses the kit, and what it talks to.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  dev["Developer<br/>(terminal)"]
+  ai["AI client<br/>Claude, Codex, Cursor ...<br/>(over MCP)"]
+  kit["Exasol Personal<br/>Local Starter Kit<br/>exakit + local Exasol"]
+  rel["Artifact sources<br/>GitHub releases, Maven Central"]
+  subgraph sources["External sources"]
+    direction TB
+    jdbc["Relational databases<br/>PostgreSQL, MySQL, SQL Server,<br/>Oracle, another Exasol"]
+    mongo["MongoDB / Atlas"]
+    lake["Lakehouse<br/>Iceberg REST catalog + S3 storage"]
+    dbx["Databricks<br/>Unity Catalog, Iceberg REST,<br/>SQL warehouse"]
+  end
+  dev -- "exakit connect / source" --> kit
+  ai -- "SQL over MCP (read-only user)" --> kit
+  kit -- "adapters, drivers, Rust runtime<br/>(SHA-256 pinned)" --> rel
+  kit -- "live queries" --> jdbc
+  kit -- "live queries" --> mongo
+  kit -- "catalog + files" --> lake
+  kit -- "metadata + rows" --> dbx
+</pre></div>
+<p class="caption">The AI client never sees the source's credentials: it reads <code>VS_NAME</code> like any other schema, as the MCP read-only user.</p>
+
+<!-- ======================================================================= -->
+<h2 id="containers">3. Containers (C4 level 2)</h2>
+<p>The deployable and runtime pieces inside the kit. "Container" here is C4's term for a separately running or separately stored unit, not a Podman container.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+  user["Developer / agent"]
+  subgraph host["This machine"]
+    direction TB
+    cli["exakit CLI<br/>setup/exakit (bash 3.2)<br/>setup/exakit.ps1 (PS 5.1)"]
+    bridge["Bridge<br/>setup/lib/virtual-schemas.sh / .ps1"]
+    engine["Virtual-schemas engine<br/>Python, pyexasol venv, python -I<br/>setup/virtual-schemas/engine/"]
+    conns["Connector catalog<br/>connectors/ID/connector.json + hooks.py<br/>runtimes.json"]
+    kitstate[("Kit state<br/>~/.exasol-starter-kit/<br/>sources/, cache/, logs/, credentials/")]
+    launcher["exasol launcher CLI<br/>info, slc install, start/stop"]
+    deploy[("Deployment folder<br/>local/runtime/exa = the database's /exa<br/>BucketFS files, jdbc/ driver folders")]
+  end
+  subgraph db["Exasol Personal database"]
+    direction TB
+    sqleng["SQL engine<br/>port 8563"]
+    objs[("EXAKIT_VS schema: adapter scripts<br/>CONNECTION EXAKIT_SRC_NAME<br/>VIRTUAL SCHEMA VS_NAME")]
+    slc["Script runtimes<br/>Java (official SLC), RUST (custom SLC),<br/>Lua (built in)"]
+  end
+  ext["External source"]
+  user --> cli --> bridge --> engine
+  engine -- reads --> conns
+  engine -- "config / state / registry / log" --> kitstate
+  engine -- "fetch + verify" --> kitstate
+  engine -- "stage adapter + driver files" --> deploy
+  engine -- "install SLC, restart" --> launcher
+  engine -- "SQL via pyexasol (admin)" --> sqleng
+  deploy -. "mounted as /exa" .-> slc
+  sqleng --> objs
+  objs -- "adapter runs in" --> slc
+  slc -- "pushdown / IMPORT / scan" --> ext
+</pre></div>
+<p class="caption">The engine writes adapter and driver files straight into the deployment folder that the database mounts as <code>/exa</code>; everything else goes through SQL.</p>
+
+<!-- ======================================================================= -->
+<h2 id="components">4. Components (C4 level 3)</h2>
+<p>Inside the engine. One module per concern, plus the connector plug-in surface.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  subgraph engine["setup/virtual-schemas/engine"]
+    direction TB
+    cli["cli.py<br/>argparse, --json contract,<br/>exception to exit code + kind"]
+    life["lifecycle.py<br/>connect, check, reauth, refresh,<br/>remove, list, show, describe,<br/>failure explanation"]
+    plan["plan.py<br/>load connectors, validate,<br/>URL parse/build, TLS levels,<br/>plan steps, hook dispatch"]
+    sqlm["sql.py<br/>Db (pyexasol), quoting,<br/>DDL builders, probes"]
+    net["net.py<br/>URL and host parsing,<br/>host classes, resolution"]
+    art["artifacts.py<br/>fetch + SHA-256 verify,<br/>stage to BucketFS / jdbc,<br/>registry ref-counts"]
+    rt["runtime.py<br/>exasol launcher, SLC install,<br/>restart, sandbox DNS links"]
+    st["state.py<br/>paths, JSON files, lock,<br/>log, secret redaction"]
+    ui["ui.py<br/>terminal rendering<br/>(twin of ui.sh / ui.ps1)"]
+  end
+  subgraph plug["Connector plug-in: connectors/ID/"]
+    direction TB
+    cj["connector.json<br/>inputs, url, tls, adapter, driver,<br/>scripts, failures, messages, notes"]
+    hk["hooks.py (optional)<br/>parse_url, build_url, validate, prepare,<br/>connection_user, connection_secret,<br/>properties, extra_connections, adapter_source"]
+  end
+  cli --> life
+  life --> plan
+  life --> sqlm
+  life --> art
+  life --> rt
+  life --> st
+  life --> ui
+  plan --> net
+  plan --> cj
+  plan --> hk
+  art --> st
+  sqlm --> st
+</pre></div>
+<p class="caption">Everything specific to one source lives in its folder. The engine branches on the connector's <em>runtime</em> (java, rust, lua) and <em>adapter scope</em>, never on its id.</p>
+
+<h3>Adapter scopes</h3>
+<div class="table-wrap"><table>
+  <tr><th>Scope</th><th>Script name</th><th>Used by</th><th>Upgrade behaviour</th></tr>
+  <tr><td><code>version</code></td><td>versioned, e.g. <code>POSTGRESQL_4_1_0</code></td><td>JAR adapters (JDBC sources)</td><td>Old and new versions sit side by side; each source moves when it reconnects.</td></tr>
+  <tr><td><code>connector</code></td><td>fixed, e.g. <code>MONGODB_ADAPTER</code></td><td>Rust adapters</td><td>A Rust library's entry point is named after its script, so the name cannot change. All sources of the connector move together, then their virtual schemas are refreshed.</td></tr>
+  <tr><td><code>source</code></td><td>per source, e.g. <code>DATABRICKS_SALES</code></td><td>Databricks (patched Lua)</td><td>Each source's script carries its own certificate pin.</td></tr>
+</table></div>
+
+<!-- ======================================================================= -->
+<h2 id="decomposition">5. Functional decomposition</h2>
+<p>Commands, what they do, and where the code is. Every command takes <code>--json</code> and answers with one object carrying <code>ok</code>, <code>remedy</code>, <code>remedy_hint</code> and, on failure, a <code>kind</code>.</p>
+<div class="table-wrap"><table>
+  <tr><th>Command</th><th>Sub-functions</th><th>Entry point</th></tr>
+  <tr><td><code>exakit connect [source]</code></td><td>gather inputs (flags, <code>EXAKIT_VS_*</code>, wizard) · validate · sweep orphans · gather facts · build plan · consent to a restart · install runtime · fetch, verify, stage · staging connection, probe, promote · adapter script · virtual schema · verify rows (admin + MCP user) · record</td><td><code>lifecycle.connect</code></td></tr>
+  <tr><td><code>source list</code></td><td>every source with TLS level, status, last check</td><td><code>lifecycle.list_sources</code></td></tr>
+  <tr><td><code>source show NAME</code></td><td>one source's details, objects, adapter, tables</td><td><code>lifecycle.show</code></td></tr>
+  <tr><td><code>source describe NAME [TABLE]</code></td><td>columns and Exasol types from <code>SYS.EXA_ALL_COLUMNS</code> (no call to the source) · <code>--ddl [--schema S]</code> CREATE TABLE statements</td><td><code>lifecycle.describe</code>, <code>sql.table_ddl</code></td></tr>
+  <tr><td><code>source check NAME</code></td><td>restage missing files · runtime active · DNS links (Java) · re-pin (Databricks) · probe · verify rows</td><td><code>lifecycle.check</code></td></tr>
+  <tr><td><code>source reauth NAME</code></td><td>new user/password through a staging connection; old ones stay until the new ones work</td><td><code>lifecycle.reauth</code></td></tr>
+  <tr><td><code>source refresh NAME</code></td><td><code>ALTER VIRTUAL SCHEMA ... REFRESH</code>: re-read tables and columns</td><td><code>lifecycle.refresh</code></td></tr>
+  <tr><td><code>source remove NAME</code></td><td>removal plan · <code>--dry-run</code> · drop schema and connections · release ref-counted adapter, driver, files · drop <code>EXAKIT_VS</code> when empty</td><td><code>lifecycle.remove</code></td></tr>
+  <tr><td>post-start hook</td><td>after every <code>exakit start</code>: link name resolution into the Java sandbox</td><td><code>lifecycle.runtime_hook</code></td></tr>
+</table></div>
+
+<!-- ======================================================================= -->
+<h2 id="dataflow">6. Data flows</h2>
+
+<h3 id="df-secrets">6.1 Secrets</h3>
+<p>Where a password or token travels, and where it never goes.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  in1["Hidden prompt"]
+  in2["--password-file PATH<br/>(UTF-8 or UTF-16)"]
+  in3["--password-stdin"]
+  url["Password inside a pasted URL"]
+  eng["Engine memory<br/>registered for redaction"]
+  doc["Lakehouse only: JSON document<br/>S3 keys, or token + vended credentials"]
+  stg["CONNECTION EXAKIT_SRC_NAME_NEW<br/>(staging, dropped after use)"]
+  conn[("CONNECTION EXAKIT_SRC_NAME<br/>IDENTIFIED BY secret")]
+  adp["Adapter at query time"]
+  src["Source"]
+  never["Never written to:<br/>config.json, state.json, registry,<br/>logs (redacted), --json output"]
+  in1 --> eng
+  in2 --> eng
+  in3 --> eng
+  url -- "stripped, never used" --> never
+  eng --> doc --> stg
+  eng --> stg
+  stg -- "probe succeeded" --> conn
+  conn --> adp --> src
+  eng -. "redacted copies only" .-> never
+</pre></div>
+<p class="caption">There is deliberately no <code>--password</code> option: a command line is readable by every process on the machine.</p>
+
+<h3 id="df-rows">6.2 Rows</h3>
+<p>The same <code>SELECT</code> takes a different path for each runtime family. Pushdown means the filter, projection, limit or aggregate runs at the source.</p>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  q["SELECT ... FROM VS_NAME.T"]
+  subgraph java["Java runtime (JDBC sources, Exasol)"]
+    ja["Java adapter<br/>writes pushdown SQL"]
+    imp["IMPORT FROM JDBC / EXA<br/>AT EXAKIT_SRC_NAME"]
+  end
+  subgraph lua["Lua (Databricks)"]
+    la["Lua adapter<br/>metadata over pinned HTTPS"]
+    limp["IMPORT FROM JDBC<br/>Databricks driver"]
+  end
+  subgraph rust["Rust runtime"]
+    ms["MONGODB_SCAN UDF<br/>scan spec with filters"]
+    ls["LAKEHOUSE_SCAN UDF<br/>reads Parquet, filters inside"]
+  end
+  pg[("RDBMS")]
+  wh[("Databricks SQL warehouse")]
+  uc[("Unity Catalog API")]
+  mg[("MongoDB")]
+  cat[("Iceberg REST / Unity catalog")]
+  s3[("Object storage")]
+  q --> ja --> imp --> pg
+  q --> la --> limp --> wh
+  la -. "tables, columns" .-> uc
+  q --> ms --> mg
+  q --> ls
+  ls -. "table metadata, vended keys" .-> cat
+  ls -- "data files" --> s3
+</pre></div>
+<p class="caption">The lakehouse route reads files directly from storage, without any compute at the source. The Databricks connector runs every query on a SQL warehouse.</p>
+
+<h3 id="df-state">6.3 State and artifacts</h3>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+  net["GitHub releases /<br/>Maven Central"]
+  cache[("~/.exasol-starter-kit/<br/>cache/virtual-schemas/SHA256/")]
+  bfs[("/exa/bucketfs/bfsdefault/default/<br/>exakit-vs/CONNECTOR/VERSION/")]
+  jdbc[("/exa/jdbc/DRIVERNAME/<br/>driver JAR + settings.cfg")]
+  reg[("sources/registry.json<br/>adapters, drivers, runtimes:<br/>who references what")]
+  cfg[("sources/NAME/config.json<br/>non-secret inputs, object names")]
+  stt[("sources/NAME/state.json<br/>status, last check, pin, needs_refresh")]
+  log[("logs/virtual-schemas-DATE.log<br/>redacted")]
+  net -- "download, verify SHA-256<br/>(+ publisher checksum)" --> cache
+  cache -- "stage (Rust: extract .so)" --> bfs
+  cache -- "stage driver" --> jdbc
+  bfs -. "ref-counted" .-> reg
+  jdbc -. "ref-counted" .-> reg
+  cfg -.-> reg
+  stt -.-> cfg
+</pre></div>
+<p class="caption">A shared file is removed only when the last source referencing it goes. A killed run can leave a reference without a source record; <code>_sweep_orphans</code> takes it back before the next connect or remove.</p>
+
+<!-- ======================================================================= -->
+<h2 id="sequences">7. Sequences</h2>
+
+<h3 id="seq-connect">7.1 First connect</h3>
+<p><code>lifecycle.connect</code> through <code>_apply</code>. A failure anywhere in a first connect rolls back everything it made (<code>_rollback</code>).</p>
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor U as User
+  participant E as Engine
+  participant K as Kit state
+  participant L as exasol launcher
+  participant D as Exasol
+  participant S as Source
+  U->>E: exakit connect postgresql
+  E->>E: inputs (flags, env, wizard), validate
+  E->>K: lock, sweep orphans
+  E->>D: facts: SCRIPT_LANGUAGES, objects, owners
+  E->>E: build plan (restart needed?)
+  opt runtime missing
+    E->>U: consent to one restart?
+    U-->>E: yes (or --yes)
+  end
+  E->>U: password (hidden prompt or file)
+  opt runtime missing
+    E->>L: slc install (Java) or slc custom install (Rust)
+  end
+  E->>K: fetch adapter + driver, verify SHA-256
+  E->>D: stage files into /exa, add registry refs
+  opt runtime missing
+    E->>L: restart database
+  end
+  E->>D: runtime active? DNS links (Java)
+  E->>D: adapter script in EXAKIT_VS (needed by the probe of non-JDBC sources)
+  E->>D: CREATE CONNECTION EXAKIT_SRC_NAME_NEW
+  E->>D: probe through it (IMPORT, or a throwaway probe schema)
+  D->>S: connect, read
+  S-->>D: ok
+  E->>D: CREATE CONNECTION EXAKIT_SRC_NAME, drop _NEW
+  opt adapter scope source (Databricks)
+    E->>D: re-create the script with the certificate pin just read
+  end
+  E->>D: CREATE VIRTUAL SCHEMA VS_NAME
+  E->>D: SELECT one row (admin, then MCP user)
+  D->>S: pushdown query
+  S-->>D: rows
+  E->>K: write config.json, state.json
+  E-->>U: Ready: SELECT * FROM VS_NAME.T
+</pre></div>
+
+<h3 id="seq-query">7.2 A query (JDBC source)</h3>
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor C as User or AI client
+  participant X as Exasol SQL engine
+  participant A as Adapter script (Java)
+  participant I as IMPORT (JDBC driver)
+  participant S as Source database
+  C->>X: SELECT name FROM VS_SALES.ORDERS WHERE amount > 10
+  X->>A: pushdown request (columns, filter, capabilities)
+  A-->>X: IMPORT FROM JDBC AT EXAKIT_SRC_SALES STATEMENT 'SELECT ... WHERE ...'
+  X->>I: run the import
+  I->>S: SELECT name FROM orders WHERE amount > 10
+  S-->>I: matching rows only
+  I-->>X: rows
+  X-->>C: result
+</pre></div>
+<p class="caption"><code>EXPLAIN VIRTUAL SELECT ...</code> shows step 3's statement for any source.</p>
+
+<h3 id="seq-reauth">7.3 reauth: credentials replaced only once proven</h3>
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor U as User
+  participant E as Engine
+  participant D as Exasol
+  participant S as Source
+  U->>E: exakit source reauth sales --password-file new.pw
+  E->>D: CREATE CONNECTION EXAKIT_SRC_SALES_NEW
+  E->>D: probe through _NEW
+  D->>S: login with the new password
+  alt refused
+    S-->>D: auth error
+    E->>D: DROP CONNECTION _NEW
+    E-->>U: refused (kind auth), old credentials untouched
+  else accepted
+    S-->>D: ok
+    E->>D: CREATE OR REPLACE CONNECTION EXAKIT_SRC_SALES
+    E->>D: DROP CONNECTION _NEW
+    E-->>U: credentials replaced
+  end
+</pre></div>
+
+<h3 id="seq-lake">7.4 Lakehouse with vended credentials</h3>
+<p>The Unity Catalog route (<code>catalog=unity</code>, Delta log) and the Iceberg REST route (<code>catalog=iceberg</code>, Iceberg metadata) differ only in the catalog API and the metadata they follow.</p>
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant X as Exasol
+  participant A as LAKEHOUSE_ADAPTER (Rust)
+  participant C as Catalog (Unity / Iceberg REST)
+  participant S as Object storage (S3)
+  X->>A: pushdown request for VS_NAME.T
+  A->>C: load table (token from the CONNECTION)
+  C-->>A: table location + metadata
+  A->>C: temporary storage credentials
+  C-->>A: short-lived S3 keys (no region: the kit supplies it)
+  A-->>X: SELECT ... FROM LAKEHOUSE_SCAN(...) over the file list
+  X->>A: LAKEHOUSE_SCAN, files spread by LAKEHOUSE_DISTRIBUTE_FILES
+  A->>S: GET Parquet files (region, keys)
+  S-->>A: data
+  A-->>X: filtered rows
+</pre></div>
+<p class="caption">Databricks refuses step 4 for schemas on Default Storage, or without External data access and <code>EXTERNAL USE SCHEMA</code> (<code>kind external_access</code>). A Delta table whose newest commits live in Unity Catalog cannot be read on the Delta route (<code>kind catalog_managed</code>); the Iceberg REST endpoint reads it.</p>
+
+<h3 id="seq-start">7.5 After every database start</h3>
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor U as User or login autostart
+  participant K as exakit start database
+  participant L as exasol launcher
+  participant E as Engine (hook post-start)
+  participant D as Database container
+  U->>K: exakit start
+  K->>L: start (creates a NEW container)
+  L-->>K: running
+  K->>E: hook post-start (only if a Java source exists)
+  E->>D: link /etc/resolv.conf and /etc/hosts to /conf in the Java SLC
+  E-->>K: ok, or skipped (never fails the start)
+</pre></div>
+<p class="caption">The official Java SLC image ships empty <code>resolv.conf</code> and <code>hosts</code>; without the links no host name resolves in a JDBC adapter. The Rust SLC links its own; Lua resolves names natively.</p>
+
+<!-- ======================================================================= -->
+<h2 id="deployment">8. Deployment</h2>
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+  subgraph hostbox["Host: Windows, macOS or Linux"]
+    direction TB
+    term["Terminal / AI client"]
+    exk["exakit + engine<br/>(pyexasol venv)"]
+    dir[("Deployment folder<br/>local/runtime/exa")]
+    home[("~/.exasol-starter-kit")]
+    lch["exasol launcher"]
+    subgraph ctr["Container runtime managed by the launcher<br/>(Podman; on macOS inside a VM)"]
+      direction TB
+      exa["Exasol database<br/>SQL :8563"]
+      sj["Java SLC"]
+      sr["RUST SLC (x86_64 or aarch64 build)"]
+      sl["Lua"]
+    end
+  end
+  hostsrc["Source on this machine<br/>(e.g. a test container)"]
+  cloud["Cloud sources<br/>RDS, Atlas, Databricks, S3"]
+  term --> exk
+  exk --> home
+  exk --> dir
+  exk --> lch --> ctr
+  exk -- ":8563 TLS" --> exa
+  dir -. "/exa" .-> exa
+  exa --- sj
+  exa --- sr
+  exa --- sl
+  sj -- "host.containers.internal" --> hostsrc
+  sr -- "host.containers.internal" --> hostsrc
+  sj --> cloud
+  sr --> cloud
+  sl --> cloud
+</pre></div>
+<div class="table-wrap"><table>
+  <tr><th>Concern</th><th>What to know</th></tr>
+  <tr><td>Connections start inside the database</td><td>A source is reached from the database container, not from the host. <code>localhost</code> means the container itself; the kit rewrites a loopback host to <code>host.containers.internal</code> (except for the Exasol connector, whose source is this database).</td></tr>
+  <tr><td>Architecture</td><td><code>runtime.db_arch</code> picks the x86_64 or aarch64 asset for Rust runtimes and adapters. aarch64 (Apple silicon) is pinned but untested.</td></tr>
+  <tr><td>Restarts</td><td>Installing or replacing an SLC is the only step that restarts the database, and the kit asks first. Every start creates a new container, which is why the DNS links are reapplied (7.5).</td></tr>
+  <tr><td>TLS</td><td>The import process's Java trust store is empty, so JDBC sources are encrypted but not verified. Exasol is pinned by fingerprint. Rust adapters verify against their own CA bundle. Databricks metadata calls are pinned to the workspace certificate's SHA-256.</td></tr>
+  <tr><td>Windows networking</td><td>Ports published by Podman may answer on <code>::1</code> only; the engine's reachability check uses the host as given.</td></tr>
+</table></div>
+
+<!-- ======================================================================= -->
+<h2 id="connectors">9. Connector reference</h2>
+<div class="table-wrap"><table>
+  <tr><th>Connector</th><th>Runtime</th><th>Adapter</th><th>Scope</th><th>TLS on Exasol Personal</th><th>State</th></tr>
+  <tr><td><code>postgresql</code>, <code>mysql</code>, <code>sqlserver</code>, <code>oracle</code></td><td>Java</td><td>Exasol JDBC virtual-schema JARs + driver</td><td>version</td><td>encrypted, not verified (Oracle: Native Network Encryption)</td><td>available</td></tr>
+  <tr><td><code>exasol</code></td><td>Java</td><td><code>IMPORT FROM EXA</code></td><td>version</td><td>verified, certificate pinned</td><td>available</td></tr>
+  <tr><td><code>mongodb</code></td><td>Rust 0.33.0</td><td>exasol-labs/exasol-mongodb-vs</td><td>connector</td><td>verified (public CAs)</td><td>available</td></tr>
+  <tr><td><code>lakehouse</code> (<code>iceberg</code>, <code>unity</code>)</td><td>Rust 0.33.0</td><td>exasol-labs/lakehouse-engine-rs</td><td>connector</td><td>verified (https)</td><td>available</td></tr>
+  <tr><td><code>databricks</code></td><td>Lua + JDBC</td><td>exasol/databricks-virtual-schema, patched with a certificate pin</td><td>source</td><td>metadata pinned, rows not verified</td><td>available</td></tr>
+  <tr><td><code>snowflake</code></td><td>Java</td><td>Snowflake JDBC</td><td>version</td><td>its driver must verify certificates</td><td>unavailable</td></tr>
+</table></div>
+<p>Rust adapters are fingerprint-locked to one Rust SLC version, so the MongoDB and lakehouse pins move together with <code>runtimes.json</code>; a unit test enforces that they agree.</p>
+
+<!-- ======================================================================= -->
+<h2 id="reference">10. Names and files</h2>
+<div class="table-wrap"><table>
+  <tr><th>Thing</th><th>Name or path</th></tr>
+  <tr><td>Virtual schema</td><td><code>VS_NAME</code></td></tr>
+  <tr><td>Connection (+ staging)</td><td><code>EXAKIT_SRC_NAME</code> (<code>EXAKIT_SRC_NAME_NEW</code> while proving new details)</td></tr>
+  <tr><td>Adapter scripts and companions</td><td>schema <code>EXAKIT_VS</code></td></tr>
+  <tr><td>Probe schema (Rust and lakehouse checks)</td><td><code>EXAKIT_PROBE_NAME</code>, dropped after use</td></tr>
+  <tr><td>Ownership tag</td><td>COMMENT <code>managed by exakit virtual-schemas</code> (<code>sql.MARKER</code>)</td></tr>
+  <tr><td>Staged adapter files</td><td><code>/exa/bucketfs/bfsdefault/default/exakit-vs/CONNECTOR/VERSION/</code>, seen by scripts as <code>/buckets/bfsdefault/default/...</code></td></tr>
+  <tr><td>JDBC drivers</td><td><code>/exa/jdbc/DRIVERNAME/</code> with <code>settings.cfg</code></td></tr>
+  <tr><td>Per-source records</td><td><code>~/.exasol-starter-kit/sources/NAME/config.json</code>, <code>state.json</code></td></tr>
+  <tr><td>Shared references</td><td><code>~/.exasol-starter-kit/sources/registry.json</code></td></tr>
+  <tr><td>Download cache</td><td><code>~/.exasol-starter-kit/cache/virtual-schemas/</code></td></tr>
+  <tr><td>Log</td><td><code>~/.exasol-starter-kit/logs/virtual-schemas-DATE.log</code> (secrets redacted)</td></tr>
+  <tr><td>Environment answers</td><td><code>EXAKIT_VS_FIELD</code> for any connector input, e.g. <code>EXAKIT_VS_NAMESPACE</code>, <code>EXAKIT_VS_REGION</code></td></tr>
+  <tr><td>Tests</td><td><code>tests/virtual-schemas/test_engine.py</code> (unit), <code>live_*.py</code> (against real databases)</td></tr>
+</table></div>
+
+<!-- ======================================================================= -->
+<h2 id="maintaining">11. Keeping this page true</h2>
+<ul>
+  <li>The diagrams are Mermaid source inside <code>&lt;pre class="mermaid"&gt;</code> blocks: edit the text and reload. Avoid semicolons in diagram text (Mermaid reads them as statement ends).</li>
+  <li>Update the page in the same commit as a change to the connect order, a new connector, a new runtime, or a new file or object name, and bump the commit in the header.</li>
+  <li>The user-facing behaviour is documented elsewhere: <code>README.md</code>, <code>AGENTS.md</code>, <code>skills/exasol-virtual-schemas/SKILL.md</code>, <code>setup/help/virtual-schemas.json</code>. This page explains how it works, not how to use it.</li>
+  <li>Diagrams render with Mermaid from a pinned CDN version; offline, the source text shows instead.</li>
+</ul>
+</main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var stored = null;
+    try { stored = localStorage.getItem("vs-arch-theme"); } catch (e) {}
+    if (stored === "light" || stored === "dark") { root.setAttribute("data-theme", stored); }
+    function isDark() {
+      var t = root.getAttribute("data-theme");
+      if (t) { return t === "dark"; }
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+    var sources = [];
+    // innerHTML, not textContent: the <br/> line breaks in labels are elements.
+    document.querySelectorAll("pre.mermaid").forEach(function (el) { sources.push(el.innerHTML); });
+    function render() {
+      if (!window.mermaid) { return; }
+      document.querySelectorAll("pre.mermaid").forEach(function (el, i) {
+        el.removeAttribute("data-processed");
+        el.innerHTML = sources[i];
+      });
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: isDark() ? "dark" : "default",
+                           flowchart: { htmlLabels: true, curve: "basis" } });
+      mermaid.run({ querySelector: "pre.mermaid" });
+    }
+    document.getElementById("themeToggle").addEventListener("click", function () {
+      var next = isDark() ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("vs-arch-theme", next); } catch (e) {}
+      render();
+    });
+    render();
+  })();
+</script>
+</body>
+</html>

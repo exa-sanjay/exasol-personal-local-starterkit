@@ -84,7 +84,7 @@
   "environment": [
     {
       "name": "EXAKIT_VS_SOURCE",
-      "effect": "The source type for a run without a terminal: postgresql (pg), mysql, sqlserver (mssql), oracle, exasol, mongodb (mongo), lakehouse (iceberg, unity)."
+      "effect": "The source type for a run without a terminal: postgresql (pg), mysql, sqlserver (mssql), oracle, exasol, mongodb (mongo), lakehouse (iceberg, unity), databricks (dbx)."
     },
     {
       "name": "EXAKIT_VS_NAME",

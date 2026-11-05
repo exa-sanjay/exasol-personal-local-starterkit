@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>External Sources Guide</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #5b6475; --line: #dde2ea; --panel: #f5f7fa;
+    --accent: #0b6bcb; --code-bg: #eef1f5; --warn: #9a5b00; --ok: #1e7a3c; --bad: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2b313c; --panel: #1a1f27;
+      --accent: #5aa9ff; --code-bg: #20262f; --warn: #e0a85a; --ok: #6cc98a; --bad: #f0857a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151b; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2b313c; --panel: #1a1f27;
+    --accent: #5aa9ff; --code-bg: #20262f; --warn: #e0a85a; --ok: #6cc98a; --bad: #f0857a;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
+  nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+        padding: 24px 16px; border-right: 1px solid var(--line); font-size: 14px; }
+  nav .brand { font-weight: 700; margin-bottom: 12px; }
+  nav ol { list-style: none; padding: 0; margin: 0; }
+  nav li { margin: 2px 0; }
+  nav a { color: var(--muted); text-decoration: none; display: block; padding: 3px 8px; border-radius: 6px; }
+  nav a:hover { color: var(--fg); background: var(--panel); }
+  nav .sub { padding-left: 14px; font-size: 13px; }
+  .controls { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--muted); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 13px; background: none; color: var(--muted); border: 0;
+                padding: 4px 10px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--panel); color: var(--fg); font-weight: 600; }
+  .theme-toggle { font: inherit; font-size: 13px; color: var(--muted); background: none;
+                  border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; align-self: flex-start; }
+  main { padding: 32px 40px 80px; min-width: 0; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 21px; margin: 48px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 24px 0 6px; }
+  h4 { font-size: 14px; margin: 16px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  p, li { max-width: 80ch; }
+  .lede { color: var(--muted); margin-top: 0; }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.9em;
+         background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+        overflow-x: auto; font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; margin: 8px 0 12px; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .c { color: var(--muted); }
+  .shell-label { font-size: 12px; color: var(--muted); margin: 10px 0 -4px; }
+  body[data-shell="ps"] .sh-bash, body[data-shell="bash"] .sh-ps { display: none; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  .table-wrap { overflow-x: auto; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel); font-weight: 600; }
+  .note { border-left: 3px solid var(--accent); background: var(--panel); padding: 8px 14px; margin: 12px 0;
+          border-radius: 0 6px 6px 0; }
+  .note.warn { border-left-color: var(--warn); }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 99px;
+           border: 1px solid var(--line); color: var(--muted); margin-left: 6px; vertical-align: middle; }
+  .badge.ok { color: var(--ok); border-color: currentColor; }
+  .badge.off { color: var(--bad); border-color: currentColor; }
+  .source { border: 1px solid var(--line); border-radius: 10px; padding: 4px 20px 12px; margin: 20px 0; }
+  .source > h3 { margin-top: 16px; }
+  details { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 8px 0; background: var(--bg); }
+  details[open] { background: var(--panel); }
+  summary { cursor: pointer; font-weight: 600; }
+  details > p, details > ul, details > pre, details > div { margin-top: 8px; }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; }
+    main { padding: 20px 16px 60px; }
+    .source { padding: 4px 14px 10px; }
+  }
+</style>
+</head>
+<body data-shell="ps">
+<div class="layout">
+<nav aria-label="Contents">
+  <div class="brand">External sources</div>
+  <ol>
+    <li><a href="#start">1. Before you start</a></li>
+    <li><a href="#how">2. How a connect works</a></li>
+    <li><a href="#common">3. Common parameters</a></li>
+    <li><a href="#sources">4. Sources</a>
+      <ol class="sub">
+        <li><a href="#postgresql">PostgreSQL</a></li>
+        <li><a href="#mysql">MySQL</a></li>
+        <li><a href="#sqlserver">SQL Server</a></li>
+        <li><a href="#oracle">Oracle</a></li>
+        <li><a href="#exasol">Exasol</a></li>
+        <li><a href="#mongodb">MongoDB / Atlas</a></li>
+        <li><a href="#lakehouse">Lakehouse (Iceberg)</a></li>
+        <li><a href="#databricks">Databricks</a></li>
+        <li><a href="#snowflake">Snowflake</a></li>
+      </ol></li>
+    <li><a href="#after">5. After connecting</a></li>
+    <li><a href="#trouble">6. Troubleshooting</a></li>
+    <li><a href="#faq">7. FAQ</a></li>
+  </ol>
+  <div class="controls">
+    <span>Samples for</span>
+    <div class="seg" role="group" aria-label="Shell">
+      <button type="button" data-shell="ps" aria-pressed="true">PowerShell</button>
+      <button type="button" data-shell="bash" aria-pressed="false">bash / zsh</button>
+    </div>
+    <button class="theme-toggle" type="button" id="themeToggle">Switch theme</button>
+  </div>
+</nav>
+
+<main>
+<h1>Connecting external sources</h1>
+<p class="lede">Query PostgreSQL, MySQL, SQL Server, Oracle, Exasol, MongoDB, Iceberg lakehouses and Databricks live from your local Exasol, without copying any data. What to enter, where to find it, and samples that work.</p>
+<p>How it works inside: <a href="architecture.html">Virtual schemas architecture</a>.</p>
+
+<!-- ======================================================================= -->
+<h2 id="start">1. Before you start</h2>
+<ul>
+  <li><strong>The kit is installed and the database runs.</strong> Check with <code>exakit status</code>; start it with <code>exakit start</code>.</li>
+  <li><strong>You have a user at the source that can read</strong> the tables you want. A read-only user is best. Each source section below lists the minimum rights.</li>
+  <li><strong>The source accepts connections from your machine.</strong> For a cloud database, add your public IP to its firewall or security group (see the <a href="#faq-firewall">FAQ</a>).</li>
+  <li><strong>The first source of a kind may restart the database once</strong>, to install the runtime its adapter needs (Java for databases, a Rust runtime for MongoDB and the lakehouse). The kit asks first. It takes a minute or two, and later connects of that kind need no restart.</li>
+</ul>
+
+<!-- ======================================================================= -->
+<h2 id="how">2. How a connect works</h2>
+<p>One command does everything: it downloads and verifies the adapter (and a JDBC driver where needed), creates a <strong>connection</strong> that holds the credentials, creates the <strong>virtual schema</strong> <code>VS_NAME</code>, and proves the link by reading real rows.</p>
+
+<h3>Three ways to give the details</h3>
+<div class="table-wrap"><table>
+  <tr><th>Way</th><th>Use it when</th><th>Example</th></tr>
+  <tr><td><strong>Wizard</strong></td><td>you are at a terminal</td><td><code>exakit connect</code>, then answer the questions</td></tr>
+  <tr><td><strong>Flags</strong></td><td>you know the values</td><td><code>exakit connect postgresql --name sales --url ... --user reader --password-file pg.pw</code></td></tr>
+  <tr><td><strong>Environment variables</strong></td><td>scripts, CI, AI agents (no terminal)</td><td><code>EXAKIT_VS_SOURCE=postgresql EXAKIT_VS_NAME=sales ... exakit connect --json</code></td></tr>
+</table></div>
+<p>All three can be mixed: anything not given is asked for (in a terminal) or refused with a clear message (without one).</p>
+
+<h3>The connection string</h3>
+<p>The wizard's first question takes any of these, so you can paste what the cloud console shows:</p>
+<ul>
+  <li>a <strong>JDBC URL</strong>: <code>jdbc:postgresql://db.example.com:5432/shop</code></li>
+  <li>a <strong>URI</strong>: <code>postgres://reader@db.example.com/shop</code>, <code>mongodb+srv://reader@cluster0.abc.mongodb.net/</code></li>
+  <li>a <strong>bare endpoint</strong>: <code>db.example.com:5432/shop</code> (as AWS RDS shows it)</li>
+  <li>or press <strong>Enter</strong> to type host, port and database separately.</li>
+</ul>
+<div class="note warn"><strong>Passwords never go on the command line.</strong> There is no <code>--password</code> option, and a password inside a pasted URL is removed and not used. Use the hidden prompt, <code>--password-file PATH</code> or <code>--password-stdin</code>.</div>
+
+<h3>Where the connection starts</h3>
+<p>The source is reached <strong>from inside the database container</strong>, not from your terminal. Two consequences:</p>
+<ul>
+  <li><code>localhost</code> or <code>127.0.0.1</code> for a source on this machine (a local container, say) is handled for you: the kit uses the container's host alias.</li>
+  <li>A cloud source sees your machine's <strong>public IP</strong>. That's the address to allow in its firewall.</li>
+</ul>
+
+<!-- ======================================================================= -->
+<h2 id="common">3. Common parameters</h2>
+<div class="table-wrap"><table>
+  <tr><th>Flag</th><th>Environment variable</th><th>Meaning</th></tr>
+  <tr><td><code>SOURCE</code> (first argument)</td><td><code>EXAKIT_VS_SOURCE</code></td><td>the source type: <code>postgresql</code>, <code>mysql</code>, <code>sqlserver</code>, <code>oracle</code>, <code>exasol</code>, <code>mongodb</code>, <code>lakehouse</code>, <code>databricks</code> (aliases: <code>pg</code>, <code>mssql</code>, <code>mongo</code>, <code>iceberg</code>, <code>unity</code>, <code>dbx</code> ...)</td></tr>
+  <tr><td><code>--name NAME</code></td><td><code>EXAKIT_VS_NAME</code></td><td>your name for the source; the schema becomes <code>VS_NAME</code>. Letters, digits and <code>_</code>, starting with a letter, up to 40 characters</td></tr>
+  <tr><td><code>--url URL</code></td><td><code>EXAKIT_VS_JDBC_URL</code></td><td>the connection string (any form above)</td></tr>
+  <tr><td><code>--host</code>, <code>--port</code>, <code>--database</code></td><td><code>EXAKIT_VS_HOST</code>, <code>_PORT</code>, <code>_DATABASE</code></td><td>the connection as fields instead of a URL</td></tr>
+  <tr><td><code>--user</code></td><td><code>EXAKIT_VS_USER</code></td><td>the source user</td></tr>
+  <tr><td><code>--schema</code></td><td><code>EXAKIT_VS_SCHEMA</code></td><td>the source schema to expose (where the source has schemas)</td></tr>
+  <tr><td><code>--password-file PATH</code></td><td><code>EXAKIT_VS_PASSWORD_FILE</code></td><td>a file holding the password or token (UTF-8 or UTF-16; a trailing newline is fine)</td></tr>
+  <tr><td><code>--password-stdin</code></td><td></td><td>read the password from standard input</td></tr>
+  <tr><td><code>--tls verify|encrypt|none</code></td><td><code>EXAKIT_VS_TLS</code></td><td>the transport security. The default is the strongest the source allows. <code>none</code> is offered only for hosts on this machine or a private network</td></tr>
+  <tr><td><code>--yes</code></td><td><code>EXAKIT_CONFIRM_RUNTIME_UPDATE=1</code></td><td>consent to the one database restart a missing runtime needs</td></tr>
+  <tr><td><code>--dry-run</code></td><td></td><td>show the plan, change nothing</td></tr>
+  <tr><td><code>--json</code></td><td></td><td>one JSON object on stdout (for scripts and agents), never a prompt</td></tr>
+  <tr><td></td><td><code>EXAKIT_VS_FIELD</code></td><td>any source-specific field, upper-cased: <code>EXAKIT_VS_COLLECTION</code>, <code>EXAKIT_VS_NAMESPACE</code>, <code>EXAKIT_VS_HTTP_PATH</code>, <code>EXAKIT_VS_CATALOG</code> ...</td></tr>
+</table></div>
+
+<h3>TLS levels</h3>
+<div class="table-wrap"><table>
+  <tr><th>Level</th><th>Meaning on Exasol Personal</th></tr>
+  <tr><td><code>verify</code></td><td>encrypted, certificate verified. Available for Exasol (pinned fingerprint), MongoDB and the lakehouse (public CAs)</td></tr>
+  <tr><td><code>encrypt</code></td><td>encrypted, certificate not verified. The default for the JDBC databases, because the database's import process has no trust store yet</td></tr>
+  <tr><td><code>none</code></td><td>not encrypted. Only for a source on this machine or a private network</td></tr>
+</table></div>
+
+<!-- ======================================================================= -->
+<h2 id="sources">4. Sources</h2>
+
+<!-- ---------------------------------------------------------- PostgreSQL -->
+<section class="source" id="postgresql">
+<h3>PostgreSQL <span class="badge ok">available</span> <span class="badge">Java</span></h3>
+<p>Also for Amazon RDS / Aurora PostgreSQL, Azure Database for PostgreSQL, Google Cloud SQL, Supabase, Neon. Command: <code>exakit connect postgresql</code> (aliases <code>pg</code>, <code>postgres</code>).</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Host</td><td>yes</td><td></td><td><code>db.example.com</code></td></tr>
+  <tr><td>Port</td><td></td><td><code>5432</code></td><td></td></tr>
+  <tr><td>Database</td><td>yes</td><td></td><td><code>shop</code></td></tr>
+  <tr><td>User / password</td><td>yes</td><td></td><td><code>reader</code></td></tr>
+  <tr><td>Schema</td><td>yes</td><td><code>public</code></td><td><code>sales</code></td></tr>
+</table></div>
+<h4>Where to find it</h4>
+<p><strong>AWS RDS:</strong> RDS console, Databases, your instance, <em>Connectivity &amp; security</em>: <em>Endpoint</em> and <em>Port</em>. The instance must be <em>Publicly accessible</em>, and its security group needs an inbound rule for port 5432 from your public IP.</p>
+<h4>Minimum rights at the source</h4>
+<pre><code>GRANT CONNECT ON DATABASE shop TO reader;
+GRANT USAGE ON SCHEMA sales TO reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA sales TO reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA sales GRANT SELECT ON TABLES TO reader;</code></pre>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>exakit connect postgresql --name sales `
+  --url "jdbc:postgresql://mydb.abc123.eu-west-1.rds.amazonaws.com:5432/shop" `
+  --user reader --schema sales --password-file "$env:USERPROFILE\pg.pw"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>exakit connect postgresql --name sales \
+  --url "jdbc:postgresql://mydb.abc123.eu-west-1.rds.amazonaws.com:5432/shop" \
+  --user reader --schema sales --password-file ~/pg.pw</code></pre>
+<pre><code>exakit sql 'SELECT * FROM VS_SALES."orders" LIMIT 10'</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>Names keep their PostgreSQL spelling (usually lower case): quote them, e.g. <code>"orders"</code>. From PowerShell, escape the quotes inside single quotes as <code>\"orders\"</code>.</li>
+  <li><code>NUMERIC</code> arrives as <code>VARCHAR</code> (it can exceed Exasol's DECIMAL range), <code>TIMESTAMPTZ</code> as <code>TIMESTAMP</code>, and JSON, UUID and INTERVAL as <code>VARCHAR</code>. <code>CAST</code> before you aggregate.</li>
+  <li>Array columns are left out, and <code>BYTEA</code> reads as the text <code>bytea NOT SUPPORTED</code>.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- MySQL -->
+<section class="source" id="mysql">
+<h3>MySQL <span class="badge ok">available</span> <span class="badge">Java</span></h3>
+<p>Also Amazon RDS / Aurora MySQL, Azure Database for MySQL, Cloud SQL. Command: <code>exakit connect mysql</code>.</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Host</td><td>yes</td><td></td><td><code>mysql.example.com</code></td></tr>
+  <tr><td>Port</td><td></td><td><code>3306</code></td><td></td></tr>
+  <tr><td>Database</td><td>yes</td><td></td><td><code>shop</code> (MySQL's database is what other systems call a schema)</td></tr>
+  <tr><td>User / password</td><td>yes</td><td></td><td><code>reader</code></td></tr>
+</table></div>
+<h4>Minimum rights at the source</h4>
+<pre><code>CREATE USER 'reader'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON shop.* TO 'reader'@'%';</code></pre>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>exakit connect mysql --name shop --url "jdbc:mysql://mysql.example.com:3306/shop" `
+  --user reader --password-file "$env:USERPROFILE\mysql.pw"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>exakit connect mysql --name shop --url "jdbc:mysql://mysql.example.com:3306/shop" \
+  --user reader --password-file ~/mysql.pw</code></pre>
+<pre><code>exakit sql 'SELECT * FROM VS_SHOP."orders" LIMIT 10'</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>Tables keep the source's spelling: quote them.</li>
+  <li>The MySQL driver (Connector/J) is GPL software: the kit downloads it onto your machine only and never redistributes it.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- SQL Server -->
+<section class="source" id="sqlserver">
+<h3>SQL Server <span class="badge ok">available</span> <span class="badge">Java</span></h3>
+<p>Also Azure SQL Database, Azure SQL Managed Instance, Amazon RDS for SQL Server. Command: <code>exakit connect sqlserver</code> (aliases <code>mssql</code>, <code>azure-sql</code>).</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Host</td><td>yes</td><td></td><td><code>myserver.database.windows.net</code></td></tr>
+  <tr><td>Port</td><td></td><td><code>1433</code></td><td></td></tr>
+  <tr><td>Database</td><td>yes</td><td></td><td><code>shop</code></td></tr>
+  <tr><td>User / password</td><td>yes</td><td></td><td>a SQL login, e.g. <code>reader</code></td></tr>
+  <tr><td>Schema</td><td>yes</td><td><code>dbo</code></td><td><code>sales</code></td></tr>
+</table></div>
+<h4>Where to find it</h4>
+<p><strong>Azure SQL:</strong> the server name on the database's <em>Overview</em> page. Under the server's <em>Networking</em>, add a firewall rule for your public IP.</p>
+<h4>Minimum rights at the source</h4>
+<pre><code>CREATE LOGIN reader WITH PASSWORD = '...';     -- on master (Azure: CREATE USER ... WITH PASSWORD in the database)
+CREATE USER reader FOR LOGIN reader;           -- in the database
+ALTER ROLE db_datareader ADD MEMBER reader;</code></pre>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>exakit connect sqlserver --name crm --host myserver.database.windows.net --database shop `
+  --user reader --schema dbo --password-file "$env:USERPROFILE\mssql.pw"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>exakit connect sqlserver --name crm --host myserver.database.windows.net --database shop \
+  --user reader --schema dbo --password-file ~/mssql.pw</code></pre>
+<pre><code>exakit sql 'SELECT * FROM VS_CRM."Orders" LIMIT 10'</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>SQL Server's certificates are usually self-signed: the connection is encrypted without verifying the certificate.</li>
+  <li>Tables keep the source's spelling: quote them, e.g. <code>"Orders"</code>.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- Oracle -->
+<section class="source" id="oracle">
+<h3>Oracle <span class="badge ok">available</span> <span class="badge">Java</span></h3>
+<p>Also Amazon RDS for Oracle, Oracle Database Free. Command: <code>exakit connect oracle</code>.</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Host</td><td>yes</td><td></td><td><code>oracle.example.com</code></td></tr>
+  <tr><td>Port</td><td></td><td><code>1521</code></td><td></td></tr>
+  <tr><td>Service name</td><td>yes</td><td></td><td><code>FREEPDB1</code>, <code>ORCL</code></td></tr>
+  <tr><td>User / password</td><td>yes</td><td></td><td><code>reader</code></td></tr>
+  <tr><td>Schema (owner)</td><td>yes</td><td></td><td><code>HR</code> (upper-cased for you)</td></tr>
+</table></div>
+<h4>Minimum rights at the source</h4>
+<pre><code>CREATE USER reader IDENTIFIED BY "...";
+GRANT CREATE SESSION TO reader;
+GRANT SELECT ON hr.employees TO reader;       -- per table, or: GRANT SELECT ANY TABLE TO reader;</code></pre>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>exakit connect oracle --name hr --host oracle.example.com --database FREEPDB1 `
+  --user reader --schema HR --password-file "$env:USERPROFILE\oracle.pw"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>exakit connect oracle --name hr --host oracle.example.com --database FREEPDB1 \
+  --user reader --schema HR --password-file ~/oracle.pw</code></pre>
+<pre><code>exakit sql 'SELECT * FROM VS_HR.EMPLOYEES LIMIT 10'</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>"Encrypted" here is Oracle Native Network Encryption on the normal port, negotiated by driver and server. TCPS is not possible yet.</li>
+  <li>Oracle names are upper case unless they were created quoted, so most queries need no quotes.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- Exasol -->
+<section class="source" id="exasol">
+<h3>Exasol <span class="badge ok">available</span> <span class="badge">Java</span></h3>
+<p>Another Exasol database (SaaS, on-premises, another Personal), or another schema of this one. Command: <code>exakit connect exasol</code>.</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Host</td><td>yes</td><td></td><td><code>exa.example.com</code>, or <code>localhost</code> for this database</td></tr>
+  <tr><td>Port</td><td></td><td><code>8563</code></td><td></td></tr>
+  <tr><td>User / password</td><td>yes</td><td></td><td><code>reader</code></td></tr>
+  <tr><td>Schema</td><td>yes</td><td></td><td><code>RETAIL</code> (as Exasol stores it, usually upper case)</td></tr>
+</table></div>
+<h4>Minimum rights at the source</h4>
+<pre><code>CREATE USER reader IDENTIFIED BY "...";
+GRANT CREATE SESSION TO reader;
+GRANT SELECT ON SCHEMA RETAIL TO reader;</code></pre>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>exakit connect exasol --name retail --host exa.example.com --user reader `
+  --schema RETAIL --password-file "$env:USERPROFILE\exa.pw"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>exakit connect exasol --name retail --host exa.example.com --user reader \
+  --schema RETAIL --password-file ~/exa.pw</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>This is the one JDBC-style source with <strong>verified</strong> TLS: the kit pins the server's certificate fingerprint, which needs no trust store.</li>
+  <li>The schema name is case-sensitive: give it as Exasol stores it.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- MongoDB -->
+<section class="source" id="mongodb">
+<h3>MongoDB / Atlas <span class="badge ok">available</span> <span class="badge">Rust</span></h3>
+<p>MongoDB Atlas, self-hosted MongoDB, a local container. One <strong>collection</strong> per source. Command: <code>exakit connect mongodb</code> (alias <code>mongo</code>).</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Env variable</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Host</td><td><code>EXAKIT_VS_HOST</code></td><td>yes</td><td></td><td><code>cluster0.abc12.mongodb.net</code></td></tr>
+  <tr><td>Port</td><td><code>EXAKIT_VS_PORT</code></td><td></td><td><code>27017</code></td><td>(none for <code>mongodb+srv://</code>)</td></tr>
+  <tr><td>User / password</td><td></td><td>yes</td><td></td><td>a user defined in the <code>admin</code> database</td></tr>
+  <tr><td>Database</td><td><code>EXAKIT_VS_DATABASE</code></td><td>yes</td><td></td><td><code>sample_mflix</code></td></tr>
+  <tr><td>Collection</td><td><code>EXAKIT_VS_COLLECTION</code></td><td>yes</td><td></td><td><code>movies</code></td></tr>
+</table></div>
+<h4>Where to find it (Atlas)</h4>
+<ol>
+  <li><strong>Connection string:</strong> Clusters, <em>Connect</em>, <em>Drivers</em>. Copy the <code>mongodb+srv://...</code> string, and remove the <code>:&lt;db_password&gt;</code> part.</li>
+  <li><strong>User:</strong> Security, <em>Database Access</em>, add a user with password authentication and the role <em>Only read any database</em> (or <code>read</code> on one database). Atlas creates users in <code>admin</code>, which is what the adapter needs.</li>
+  <li><strong>Network:</strong> Security, <em>Network Access</em>, <em>Add Current IP Address</em>. Avoid temporary entries: when they expire, the source stops working.</li>
+</ol>
+<h4>Minimum rights (self-hosted)</h4>
+<pre><code>use admin
+db.createUser({ user: "reader", pwd: passwordPrompt(), roles: [ { role: "read", db: "shop" } ] })</code></pre>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>$env:EXAKIT_VS_DATABASE = "sample_mflix"
+$env:EXAKIT_VS_COLLECTION = "movies"
+exakit connect mongodb --name movies --url "mongodb+srv://reader@cluster0.abc12.mongodb.net/" `
+  --password-file "$env:USERPROFILE\atlas.pw"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>EXAKIT_VS_DATABASE=sample_mflix EXAKIT_VS_COLLECTION=movies \
+exakit connect mongodb --name movies --url "mongodb+srv://reader@cluster0.abc12.mongodb.net/" \
+  --password-file ~/atlas.pw</code></pre>
+<pre><code>exakit source describe movies                                  # see the tables it made
+exakit sql 'SELECT "title", "year" FROM VS_MOVIES."MOVIES" LIMIT 10'</code></pre>
+<h4>How documents become tables</h4>
+<ul>
+  <li>The documents form a <strong>root table</strong>; MongoDB's <code>_id</code> is the column <code>mongo_id</code>.</li>
+  <li>A <strong>nested object</strong> becomes a child table, joined on <code>root."field|object" = child."_id"</code>.</li>
+  <li>An <strong>array</strong> becomes a child table joined on <code>"_parent"</code>, ordered by <code>"_pos"</code>.</li>
+  <li>Fields and child tables keep MongoDB's spelling: quote them.</li>
+  <li>Columns are inferred from a sample of up to 100 documents. After the collection's shape changes, run <code>exakit source refresh NAME</code>.</li>
+</ul>
+<pre><code>-- a nested object as columns (check the exact child table names with: exakit source describe NAME)
+SELECT t."theaterId", l.*
+FROM VS_THEATERS."THEATERS" t
+JOIN VS_THEATERS."THEATERS_location" l ON t."location|object" = l."_id";</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>The adapter always logs in against the <code>admin</code> database, whatever the URI says. A different <code>authSource</code> is refused up front.</li>
+  <li>Give one host (or a <code>mongodb+srv://</code> name), not a list of hosts: the driver finds the other members itself.</li>
+  <li>TLS is verified. <code>--tls none</code> only for a MongoDB on this machine or a private network.</li>
+  <li>A refused login and a TLS mismatch produce the same message from the adapter. The kit lists both to check.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- Lakehouse -->
+<section class="source" id="lakehouse">
+<h3>Lakehouse: Iceberg REST and Unity Catalog <span class="badge ok">available</span> <span class="badge">Rust</span></h3>
+<p>Reads Iceberg (or Delta) tables <strong>straight from object storage</strong>: no compute at the source, filters run inside the scan. Command: <code>exakit connect lakehouse</code> (aliases <code>iceberg</code>, <code>unity</code>).</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Env variable</th><th>Required</th><th>Meaning</th></tr>
+  <tr><td>Catalog URL</td><td><code>--url</code></td><td>yes</td><td>the catalog's address, e.g. <code>https://catalog.example.com</code>, including a path if it has one</td></tr>
+  <tr><td>Catalog type</td><td><code>EXAKIT_VS_CATALOG</code></td><td></td><td><code>iceberg</code> (default, any Iceberg REST catalog) or <code>unity</code> (Databricks Unity Catalog's own API). <code>exakit connect unity</code> sets <code>unity</code></td></tr>
+  <tr><td>Namespace</td><td><code>EXAKIT_VS_NAMESPACE</code></td><td>yes</td><td>Iceberg: the namespace, e.g. <code>shop</code>. Unity: <code>catalog.schema</code></td></tr>
+  <tr><td>Warehouse</td><td><code>EXAKIT_VS_WAREHOUSE</code></td><td>Iceberg</td><td>the warehouse the catalog registered, e.g. <code>s3://warehouse/</code> (Databricks: the catalog name)</td></tr>
+  <tr><td>Storage endpoint</td><td><code>EXAKIT_VS_ENDPOINT</code></td><td></td><td>only for S3-compatible storage that isn't AWS (MinIO, SeaweedFS), e.g. <code>http://minio:9000</code></td></tr>
+  <tr><td>Region</td><td><code>EXAKIT_VS_REGION</code></td><td>Unity</td><td>the bucket's AWS region, e.g. <code>us-east-2</code></td></tr>
+  <tr><td>Access key ID</td><td><code>--user</code></td><td></td><td>static S3 keys: the access key ID. <strong>Leave empty</strong> when the catalog hands out keys (a token with vended credentials)</td></tr>
+  <tr><td>Secret</td><td>password</td><td>yes</td><td>the S3 secret key, or the catalog token</td></tr>
+</table></div>
+
+<h4>Three common setups</h4>
+<p><strong>A. An Iceberg REST catalog with your own S3 keys</strong> (Polaris, Nessie, Lakekeeper, a self-hosted REST catalog):</p>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>$env:EXAKIT_VS_NAMESPACE = "shop"
+$env:EXAKIT_VS_WAREHOUSE = "s3://warehouse/"
+$env:EXAKIT_VS_REGION    = "eu-west-1"
+exakit connect lakehouse --name lake --url "https://catalog.example.com" `
+  --user AKIA... --password-file "$env:USERPROFILE\s3.secret"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>EXAKIT_VS_NAMESPACE=shop EXAKIT_VS_WAREHOUSE=s3://warehouse/ EXAKIT_VS_REGION=eu-west-1 \
+exakit connect lakehouse --name lake --url "https://catalog.example.com" \
+  --user AKIA... --password-file ~/s3.secret</code></pre>
+
+<p><strong>B. Databricks through its Iceberg REST endpoint</strong> (reads Iceberg tables and Delta tables with Iceberg reads on, even when the Delta route can't):</p>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>$env:EXAKIT_VS_WAREHOUSE = "workspace"        # the Unity catalog
+$env:EXAKIT_VS_NAMESPACE = "sales"            # the schema
+$env:EXAKIT_VS_REGION    = "us-east-2"        # the bucket's region
+exakit connect lakehouse --name dbxice `
+  --url "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com/api/2.1/unity-catalog/iceberg-rest" `
+  --password-file "$env:USERPROFILE\dbx.token"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>EXAKIT_VS_WAREHOUSE=workspace EXAKIT_VS_NAMESPACE=sales EXAKIT_VS_REGION=us-east-2 \
+exakit connect lakehouse --name dbxice \
+  --url "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com/api/2.1/unity-catalog/iceberg-rest" \
+  --password-file ~/dbx.token</code></pre>
+
+<p><strong>C. Databricks through Unity Catalog's own API</strong> (Delta tables):</p>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>$env:EXAKIT_VS_NAMESPACE = "workspace.sales"  # catalog.schema
+$env:EXAKIT_VS_REGION    = "us-east-2"
+exakit connect unity --name dbxuc --url "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com" `
+  --password-file "$env:USERPROFILE\dbx.token"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>EXAKIT_VS_NAMESPACE=workspace.sales EXAKIT_VS_REGION=us-east-2 \
+exakit connect unity --name dbxuc --url "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com" \
+  --password-file ~/dbx.token</code></pre>
+<pre><code>exakit sql 'SELECT * FROM VS_LAKE.ORDERS LIMIT 10'</code></pre>
+
+<h4>What Databricks must allow (setups B and C)</h4>
+<ol>
+  <li>The schema lives on <strong>your own cloud storage</strong> (an external location, and a schema with <code>MANAGED LOCATION</code>). Databricks <strong>Default Storage</strong> (Free Edition, serverless-only workspaces) is never readable from outside.</li>
+  <li><strong>External data access</strong> is on for the metastore (Catalog, the gear icon, Metastore).</li>
+  <li>The token's user has the grants:
+<pre><code>GRANT USE CATALOG ON CATALOG workspace TO `user@example.com`;
+GRANT USE SCHEMA, EXTERNAL USE SCHEMA, SELECT ON SCHEMA workspace.sales TO `user@example.com`;</code></pre></li>
+</ol>
+<h4>Good to know</h4>
+<ul>
+  <li>Table and column names arrive upper-cased (<code>ORDERS</code>, <code>ORDER_ID</code>): query them without quotes.</li>
+  <li>Not read: Iceberg tables with equality deletes, and ORC or Avro data files. Positional deletes and deletion vectors are read.</li>
+  <li>A Databricks Delta table whose newest commits live in Unity Catalog ("catalog-managed") can't be read on route C yet. Use route B or the <a href="#databricks">Databricks connector</a>.</li>
+  <li>The kit's catalog types are Iceberg REST (token or keys) and Unity. AWS Glue's and S3 Tables' REST endpoints need SigV4 signing, which the kit doesn't offer yet.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- Databricks -->
+<section class="source" id="databricks">
+<h3>Databricks (SQL warehouse) <span class="badge ok">available</span> <span class="badge">Lua + JDBC</span></h3>
+<p>Any Databricks table, any storage, through a <strong>SQL warehouse</strong>: each query runs on the warehouse (it costs compute and wakes a stopped warehouse). Command: <code>exakit connect databricks</code> (alias <code>dbx</code>).</p>
+<h4>Parameters</h4>
+<div class="table-wrap"><table>
+  <tr><th>Field</th><th>Env variable</th><th>Required</th><th>Default</th><th>Example</th></tr>
+  <tr><td>Workspace host</td><td><code>EXAKIT_VS_HOST</code></td><td>yes</td><td></td><td><code>dbc-a1b2c3d4-e5f6.cloud.databricks.com</code></td></tr>
+  <tr><td>Port</td><td></td><td></td><td><code>443</code></td><td></td></tr>
+  <tr><td>SQL warehouse HTTP path</td><td><code>EXAKIT_VS_HTTP_PATH</code></td><td>yes</td><td></td><td><code>/sql/1.0/warehouses/abc123def456</code></td></tr>
+  <tr><td>Personal access token</td><td>password</td><td>yes</td><td></td><td><code>dapi...</code></td></tr>
+  <tr><td>Catalog</td><td><code>EXAKIT_VS_CATALOG</code></td><td>yes</td><td><code>main</code></td><td><code>workspace</code></td></tr>
+  <tr><td>Schema</td><td><code>--schema</code></td><td>yes</td><td><code>default</code></td><td><code>sales</code></td></tr>
+</table></div>
+<h4>Where to find it</h4>
+<ol>
+  <li><strong>JDBC URL</strong> (it carries host and HTTP path): SQL Warehouses, your warehouse, <em>Connection details</em>, <em>JDBC URL</em>. Paste it as <code>--url</code>.</li>
+  <li><strong>Token:</strong> your profile icon (top right), <em>Settings</em>, <em>Developer</em>, <em>Access tokens</em>, <em>Generate new token</em>. Choose scope <em>Other APIs</em> / <code>all-apis</code> (the adapter reads metadata through the REST API), and a lifetime such as 30 days.</li>
+  <li><strong>Rights:</strong> the token's user needs <em>CAN USE</em> on the warehouse, and <code>USE CATALOG</code>, <code>USE SCHEMA</code> and <code>SELECT</code> on the schema.</li>
+</ol>
+<h4>Sample</h4>
+<p class="shell-label sh-ps">PowerShell</p>
+<pre class="sh-ps"><code>$env:EXAKIT_VS_CATALOG = "workspace"
+exakit connect databricks --name dbx --schema sales `
+  --url "jdbc:databricks://dbc-a1b2c3d4-e5f6.cloud.databricks.com:443/default;transportMode=http;ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/abc123def456;" `
+  --password-file "$env:USERPROFILE\dbx.token"</code></pre>
+<p class="shell-label sh-bash">bash / zsh</p>
+<pre class="sh-bash"><code>EXAKIT_VS_CATALOG=workspace exakit connect databricks --name dbx --schema sales \
+  --url 'jdbc:databricks://dbc-a1b2c3d4-e5f6.cloud.databricks.com:443/default;transportMode=http;ssl=1;AuthMech=3;httpPath=/sql/1.0/warehouses/abc123def456;' \
+  --password-file ~/dbx.token</code></pre>
+<pre><code>exakit sql 'SELECT * FROM VS_DBX.ORDERS LIMIT 10'</code></pre>
+<h4>Good to know</h4>
+<ul>
+  <li>The shared <code>samples</code> catalog lists no tables this way. Use a schema of your own.</li>
+  <li>Upstream limits: at most 50 tables per virtual schema, <code>BINARY</code> columns not supported, no <code>TABLE_FILTER</code>.</li>
+  <li>The adapter's metadata calls are pinned to the workspace certificate. When Databricks renews it, <code>exakit source check NAME</code> verifies and pins the new one.</li>
+  <li>Rows, and the token with them, travel encrypted but without certificate verification. Give this source a token of its own, scoped as narrowly as the workspace allows.</li>
+  <li>To avoid warehouse costs for Iceberg or Delta tables on your own storage, see the <a href="#lakehouse">lakehouse</a> routes B and C.</li>
+</ul>
+</section>
+
+<!-- ---------------------------------------------------------- Snowflake -->
+<section class="source" id="snowflake">
+<h3>Snowflake <span class="badge off">not available yet</span></h3>
+<p>Listed, but refused: the Snowflake driver always verifies the server's certificate, and Exasol Personal's import process has no trust store to verify it with yet. <code>EXAKIT_VS_ALLOW_UNAVAILABLE=1</code> lets you try it (for example on a newer Exasol Personal). For when it works: account URL host, warehouse, database, schema, an optional role, and a service user with a programmatic access token as the password.</p>
+</section>
+
+<!-- ======================================================================= -->
+<h2 id="after">5. After connecting</h2>
+<div class="table-wrap"><table>
+  <tr><th>Task</th><th>Command</th></tr>
+  <tr><td>See all sources, their TLS level and status</td><td><code>exakit source list</code></td></tr>
+  <tr><td>One source's details</td><td><code>exakit source show NAME</code></td></tr>
+  <tr><td>Tables, columns and types</td><td><code>exakit source describe NAME [TABLE]</code></td></tr>
+  <tr><td>CREATE TABLE statements, e.g. to copy locally</td><td><code>exakit source describe NAME --ddl --schema MYCOPY</code></td></tr>
+  <tr><td>Test it, and repair what a restart can undo</td><td><code>exakit source check NAME</code></td></tr>
+  <tr><td>Pick up new tables or columns at the source</td><td><code>exakit source refresh NAME</code></td></tr>
+  <tr><td>A new password or token</td><td><code>exakit source reauth NAME --password-file PATH</code> (the old one stays until the new one works)</td></tr>
+  <tr><td>Point it at another schema or collection</td><td><code>exakit connect TYPE --name NAME</code> with the new value (no password needed)</td></tr>
+  <tr><td>Remove it (preview first)</td><td><code>exakit source remove NAME --dry-run</code>, then <code>--yes</code></td></tr>
+</table></div>
+
+<h3>Querying tips</h3>
+<ul>
+  <li><strong>Quoting:</strong> PostgreSQL, MySQL, SQL Server and MongoDB keep their names' spelling: quote them. Oracle, Snowflake and the lakehouse arrive upper case: no quotes needed.</li>
+  <li><strong>PowerShell:</strong> inside single quotes, write <code>\"orders\"</code> for a quoted name: <code>exakit sql 'SELECT * FROM VS_SALES.\"orders\"'</code>.</li>
+  <li><strong>Joins across sources</strong> work like any join: <code>SELECT ... FROM VS_SALES."orders" o JOIN TPCH.CUSTOMER c ON ...</code>.</li>
+  <li><strong>What runs at the source:</strong> <code>EXPLAIN VIRTUAL SELECT ...</code> shows the statement the adapter sends, so you can see whether a filter or aggregate was pushed down.</li>
+  <li><strong>A local copy</strong> for heavy repeated queries: <code>CREATE TABLE MYCOPY.ORDERS AS SELECT * FROM VS_SALES."orders";</code></li>
+  <li><strong>AI clients</strong> connected over MCP can query <code>VS_NAME</code> straight away, as the read-only MCP user.</li>
+</ul>
+
+<!-- ======================================================================= -->
+<h2 id="trouble">6. Troubleshooting</h2>
+<p>A failed connect or check says what went wrong and what to do. With <code>--json</code> the answer carries a <code>kind</code> and a runnable <code>remedy</code>.</p>
+<div class="table-wrap"><table>
+  <tr><th>Message (kind)</th><th>Usual cause</th><th>What to do</th></tr>
+  <tr><td>cannot reach (<code>network</code>)</td><td>firewall / security group, wrong port, VPN, a stopped source</td><td>allow your public IP at the source; check the port; remember the connection starts inside the database</td></tr>
+  <tr><td>name does not resolve (<code>unresolvable</code>, <code>dns</code>)</td><td>a typo in the host, or a private DNS name</td><td>fix the host; <code>exakit source check NAME</code></td></tr>
+  <tr><td>refused the login (<code>auth</code>)</td><td>wrong user or password, expired token</td><td><code>exakit source reauth NAME</code></td></tr>
+  <tr><td>refused the connection or the login (<code>login_or_connection</code>, MongoDB)</td><td>user not in <code>admin</code>, IP not allowed in Atlas, TLS mismatch</td><td>check Atlas Database Access and Network Access</td></tr>
+  <tr><td>not readable (<code>permission</code>)</td><td>the user lacks rights on the schema or table</td><td>grant them (see the source's section), then <code>exakit source check NAME</code></td></tr>
+  <tr><td>schema / collection missing</td><td>a typo, or case</td><td>fix the name; connect again with the same <code>--name</code></td></tr>
+  <tr><td>encrypted connection failed (<code>tls</code>)</td><td>the source has no TLS</td><td>only for local or private hosts: <code>--tls none</code></td></tr>
+  <tr><td>lists no tables (<code>no_tables</code>, Databricks)</td><td>the <code>samples</code> catalog, or no rights</td><td>use a schema of your own</td></tr>
+  <tr><td>not let outside engines read (<code>external_access</code>)</td><td>Default Storage, External data access off, no <code>EXTERNAL USE SCHEMA</code></td><td>see the lakehouse section</td></tr>
+  <tr><td>catalog-managed (<code>catalog_managed</code>)</td><td>a Databricks Delta table with commits in Unity Catalog</td><td>lakehouse route B, or the Databricks connector</td></tr>
+  <tr><td>another region (<code>region</code>)</td><td>wrong <code>EXAKIT_VS_REGION</code></td><td>the bucket's region from the S3 console</td></tr>
+  <tr><td>certificate changed (<code>pin_mismatch</code>, Databricks)</td><td>Databricks renewed its certificate</td><td><code>exakit source check NAME</code></td></tr>
+  <tr><td>restart not confirmed (<code>consent</code>, exit 5)</td><td>no terminal to ask</td><td>re-run with <code>--yes</code></td></tr>
+</table></div>
+<p>Details are in the log: <code>exakit logs</code>, or <code>~/.exasol-starter-kit/logs/virtual-schemas-DATE.log</code>. Passwords are redacted there.</p>
+
+<!-- ======================================================================= -->
+<h2 id="faq">7. FAQ</h2>
+
+<h3>Basics</h3>
+<details><summary>Is my data copied into Exasol?</summary>
+<p>No. Every query reads the source live. Only metadata (table and column names) is stored in the virtual schema; <code>exakit source refresh</code> re-reads it. If you want a copy, make one: <code>CREATE TABLE ... AS SELECT * FROM VS_NAME.T</code>.</p></details>
+<details><summary>How fast is it, and what does it cost at the source?</summary>
+<p>Filters, projections, <code>LIMIT</code> and (for most sources) aggregates are pushed to the source, so only matching rows travel. The source does that work: for Databricks via a SQL warehouse, that's billed warehouse compute. The lakehouse routes read files directly and use no compute at the source. Check what was pushed down with <code>EXPLAIN VIRTUAL</code>.</p></details>
+<details><summary>Can I join tables from different sources?</summary>
+<p>Yes. A virtual schema is a schema like any other: join <code>VS_SALES</code> with <code>VS_MOVIES</code> or with local tables in one query.</p></details>
+<details><summary>Can I connect several schemas of one database?</summary>
+<p>Yes, one source per schema: <code>exakit connect postgresql --name sales_eu --schema eu ...</code> and <code>--name sales_us --schema us ...</code>. They share the downloaded adapter and driver.</p></details>
+<details><summary>Can I write to the source?</summary>
+<p>No. Virtual schemas are read-only.</p></details>
+
+<h3>Security</h3>
+<details><summary>Where is my password stored? Can I see it again?</summary>
+<p>Only inside the database's CONNECTION object <code>EXAKIT_SRC_NAME</code>. It is never in the kit's files, logs or JSON output, and the kit can't show it again. To change it, use <code>exakit source reauth NAME</code>.</p></details>
+<details><summary>Why is there no <code>--password</code> option?</summary>
+<p>A command line is visible to every process on the machine and lands in shell history. Use the hidden prompt, <code>--password-file</code> or <code>--password-stdin</code>. A password inside a pasted URL is removed and not used.</p></details>
+<details><summary>"Encrypted, certificate not verified": is that safe?</summary>
+<p>The traffic is encrypted, so it can't be read in passing. But without verifying the certificate, a machine that intercepts the connection could pretend to be the source. Exasol Personal's import process has no trust store yet, which is why the JDBC sources can't verify. Use those sources over networks you trust. Exasol (pinned fingerprint), MongoDB and the lakehouse (public CAs) are verified.</p></details>
+<details><summary>Can my AI assistant see the external data?</summary>
+<p>Yes: the read-only MCP user can read every schema, virtual ones included, and the kit says so after a connect. It can only read; it never sees the credentials. To take a source away from AI clients, remove the source.</p></details>
+
+<h3 id="faq-firewall">Connecting</h3>
+<details open><summary>My cloud database times out, but my SQL tool on the same PC connects fine.</summary>
+<p>Usually the firewall. A cloud database sees your machine's <strong>public IP</strong>; check it with <code>curl https://api.ipify.org</code> and allow it:</p>
+<ul>
+  <li><strong>AWS RDS:</strong> the instance's security group, inbound rule, the port (5432, 3306 ...), source <em>My IP</em>. The instance must be <em>Publicly accessible</em>.</li>
+  <li><strong>Azure SQL / PostgreSQL / MySQL:</strong> the server's <em>Networking</em> page, add a firewall rule.</li>
+  <li><strong>MongoDB Atlas:</strong> Security, <em>Network Access</em>, <em>Add Current IP Address</em> (not a temporary entry).</li>
+</ul>
+<p>Also: on a VPN that doesn't route the container's traffic, the database may not reach a company-network source even when your PC does.</p></details>
+<details><summary>My source runs on my own machine (a container). Which host do I give?</summary>
+<p><code>localhost</code> and the published port. The kit rewrites it to the container's host alias, because <code>localhost</code> inside the database is the database itself.</p></details>
+<details><summary>Why does the first connect restart the database?</summary>
+<p>The adapter needs a script runtime inside the database: Java for the JDBC sources, a pinned Rust runtime for MongoDB and the lakehouse. Installing one takes effect only on a restart. The kit asks first, it happens once per runtime, and Lua (Databricks) needs none.</p></details>
+<details><summary>Can I script it, or let an AI agent do it?</summary>
+<p>Yes: flags or <code>EXAKIT_VS_*</code> variables, a password file, <code>--yes</code> for the restart consent, and <code>--json</code> for one machine-readable answer. Without a terminal the kit never prompts; it refuses with a message saying what is missing.</p></details>
+
+<h3>Using it</h3>
+<details><summary>A table I just created at the source doesn't show up.</summary>
+<p>Run <code>exakit source refresh NAME</code>. The table list is read when the virtual schema is created or refreshed. (MongoDB: also after the collection's document shape changes.)</p></details>
+<details><summary>"object not found", but the table exists.</summary>
+<p>Usually case. PostgreSQL, MySQL, SQL Server and MongoDB names keep their spelling: <code>"orders"</code>, not <code>ORDERS</code>. <code>exakit source describe NAME</code> shows the exact names.</p></details>
+<details><summary>The source password or token changed, or expired.</summary>
+<p><code>exakit source reauth NAME --password-file PATH</code>. The new credentials are tested on a staging connection first; the old ones stay until the new ones work. Databricks tokens expire at the lifetime you chose when creating them.</p></details>
+<details><summary>Everything stopped working after a PC restart.</summary>
+<p>Start the database (<code>exakit start</code>), then run <code>exakit source check NAME</code>: it repairs what a restart can undo, such as name resolution inside the database.</p></details>
+
+<h3>Databricks</h3>
+<details><summary>Databricks connector, Unity route or Iceberg REST route: which one?</summary>
+<div class="table-wrap"><table>
+  <tr><th></th><th>Databricks connector</th><th>Lakehouse, Iceberg REST (B)</th><th>Lakehouse, Unity (C)</th></tr>
+  <tr><td>Reads</td><td>any table, through a SQL warehouse</td><td>Iceberg (and Delta with Iceberg reads) files</td><td>Delta files</td></tr>
+  <tr><td>Warehouse compute</td><td>yes, per query</td><td>no</td><td>no</td></tr>
+  <tr><td>Needs your own storage + External data access</td><td>no</td><td>yes</td><td>yes</td></tr>
+  <tr><td>Works on Free Edition</td><td>yes</td><td>no</td><td>no</td></tr>
+</table></div>
+<p>Start with the Databricks connector: it always works. Switch to route B for big scans of tables on your own storage.</p></details>
+<details><summary>The <code>samples</code> catalog shows no tables.</summary>
+<p>It's a shared catalog that the Unity Catalog API doesn't list. Create a table in a schema of your own (e.g. <code>CREATE TABLE workspace.default.orders AS SELECT * FROM samples.tpch.orders LIMIT 1000</code>) and connect that schema.</p></details>
+<details><summary>I can't find where to create an access token.</summary>
+<p>It's under your <strong>user</strong> settings, not workspace admin: profile icon, <em>Settings</em>, <em>Developer</em>, <em>Access tokens</em>. If it's missing, a workspace admin has turned personal access tokens off.</p></details>
+
+<h3>Removing</h3>
+<details><summary>How do I remove a source completely?</summary>
+<p><code>exakit source remove NAME --dry-run</code> lists what would go, then <code>--yes</code> removes it: the virtual schema, the connection, and the adapter, driver and files no other source still uses. Only objects the kit created are ever dropped. Before uninstalling the kit, remove its sources this way; <code>exakit uninstall --dry-run</code> shows what an uninstall would take.</p></details>
+<details><summary>Why isn't Snowflake available?</summary>
+<p>Its driver always verifies certificates, and Exasol Personal's import process has no trust store yet, so it can't read data. It becomes available when Exasol Personal ships one.</p></details>
+</main>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement, body = document.body;
+    function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function put(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    var theme = get("vs-guide-theme");
+    if (theme === "light" || theme === "dark") { root.setAttribute("data-theme", theme); }
+    document.getElementById("themeToggle").addEventListener("click", function () {
+      var t = root.getAttribute("data-theme");
+      var dark = t ? t === "dark" : (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      var next = dark ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      put("vs-guide-theme", next);
+    });
+    var buttons = document.querySelectorAll(".seg button");
+    function setShell(s) {
+      body.setAttribute("data-shell", s);
+      buttons.forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-shell") === s)); });
+      put("vs-guide-shell", s);
+    }
+    var shell = get("vs-guide-shell");
+    if (!shell) { shell = /Win/.test(navigator.platform || "") ? "ps" : "bash"; }
+    setShell(shell);
+    buttons.forEach(function (b) { b.addEventListener("click", function () { setShell(b.getAttribute("data-shell")); }); });
+  })();
+</script>
+</body>
+</html>
